@@ -50,6 +50,7 @@ option(WITH_TEXT_EXAMPLE "Build Text example (requires FreeTypeFont plugin)" OFF
 cmake_dependent_option(WITH_TEXTUREDTRIANGLE_EXAMPLE "Build TexturedTriangle example (requires TgaImporter plugin)" OFF "NOT MAGNUM_TARGET_GLES" OFF)
 option(WITH_TRIANGLE_EXAMPLE "Build Triangle example" ON)
 option(WITH_VIEWER_EXAMPLE "Build Viewer example (requires ColladaImporter plugin)" OFF)
+option(WITH_VULKAN_EXAMPLE "Build Vulkan example (requires Magnum Vulkan)" OFF)
 
 # Check compiler compatibility
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "4.7.0")
