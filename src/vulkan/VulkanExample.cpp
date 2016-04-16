@@ -38,6 +38,11 @@ class VulkanExample: public Platform::Application {
 
     private:
         void drawEvent() override;
+        void keyPressEvent(KeyEvent &e) override;
+        void mousePressEvent(MouseEvent& event) override;
+        void mouseReleaseEvent(MouseEvent& event) override;
+        void mouseMoveEvent(MouseMoveEvent& event) override;
+        void mouseScrollEvent(MouseScrollEvent& event) override;
 
         Buffer _buffer;
         Mesh _mesh;
@@ -63,6 +68,30 @@ void VulkanExample::drawEvent() {
     _mesh.draw(_shader);
 
     swapBuffers();
+}
+
+void VulkanExample::keyPressEvent(KeyEvent& e) {
+    if(e.key() == KeyEvent::Key::Esc) {
+        exit();
+    } else {
+        Debug() << "keyPressEvent:" << char(e.key());
+    }
+}
+
+void VulkanExample::mousePressEvent(MouseEvent& event) {
+    Debug() << "mousePressEvent:" << int(event.button());
+}
+
+void VulkanExample::mouseReleaseEvent(MouseEvent& event) {
+    Debug() << "mouseReleaseEvent:" << int(event.button());
+}
+
+void VulkanExample::mouseMoveEvent(MouseMoveEvent& event) {
+    Debug() << "mouseMoveEvent:" << event.position();
+}
+
+void VulkanExample::mouseScrollEvent(MouseScrollEvent& event) {
+    Debug() << "mouseScrollEvent:" << event.offset();
 }
 
 }}
