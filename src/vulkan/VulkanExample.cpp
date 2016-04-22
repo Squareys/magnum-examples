@@ -23,12 +23,10 @@
     DEALINGS IN THE SOFTWARE.
 */
 
-#include <Magnum/Buffer.h>
-#include <Magnum/DefaultFramebuffer.h>
-#include <Magnum/Mesh.h>
 #include <Magnum/Math/Vector3.h>
 #include <Magnum/Platform/GlfwApplication.h>
-#include <Magnum/Shaders/VertexColor.h>
+#include <Magnum/Vk/Context.h>
+
 
 namespace Magnum { namespace Examples {
 
@@ -44,54 +42,41 @@ class VulkanExample: public Platform::Application {
         void mouseMoveEvent(MouseMoveEvent& event) override;
         void mouseScrollEvent(MouseScrollEvent& event) override;
 
-        Buffer _buffer;
-        Mesh _mesh;
-        Shaders::VertexColor3D _shader;
+        Vk::Context _context;
+
 };
 
-VulkanExample::VulkanExample(const Arguments& arguments): Platform::Application{arguments, Configuration{}.setTitle("Magnum Vulkan Triangle Example")} {
-    constexpr static const Vector3 data[] = {
-        {-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, /* Left vertex, red color */
-        { 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, /* Right vertex, green color */
-        { 0.0f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}  /* Top vertex, blue color */
-    };
-
-    _buffer.setData(data, BufferUsage::StaticDraw);
-    _mesh.setPrimitive(MeshPrimitive::Triangles)
-        .setCount(3)
-        .addVertexBuffer(_buffer, 0, Shaders::VertexColor3D::Position{}, Shaders::VertexColor3D::Color{});
+VulkanExample::VulkanExample(const Arguments& arguments)
+    : Platform::Application{arguments, Configuration{}.setTitle("Magnum Vulkan Triangle Example")},
+      _context{Vk::Context::Flag::EnableValidation}
+{
 }
 
 void VulkanExample::drawEvent() {
-    defaultFramebuffer.clear(FramebufferClear::Color);
-
-    _mesh.draw(_shader);
-
-    swapBuffers();
 }
 
 void VulkanExample::keyPressEvent(KeyEvent& e) {
     if(e.key() == KeyEvent::Key::Esc) {
         exit();
     } else {
-        Debug() << "keyPressEvent:" << char(e.key());
+        //Debug() << "keyPressEvent:" << char(e.key());
     }
 }
 
 void VulkanExample::mousePressEvent(MouseEvent& event) {
-    Debug() << "mousePressEvent:" << int(event.button());
+    //Debug() << "mousePressEvent:" << int(event.button());
 }
 
 void VulkanExample::mouseReleaseEvent(MouseEvent& event) {
-    Debug() << "mouseReleaseEvent:" << int(event.button());
+    //Debug() << "mouseReleaseEvent:" << int(event.button());
 }
 
 void VulkanExample::mouseMoveEvent(MouseMoveEvent& event) {
-    Debug() << "mouseMoveEvent:" << event.position();
+    //Debug() << "mouseMoveEvent:" << event.position();
 }
 
 void VulkanExample::mouseScrollEvent(MouseScrollEvent& event) {
-    Debug() << "mouseScrollEvent:" << event.offset();
+    //Debug() << "mouseScrollEvent:" << event.offset();
 }
 
 }}
