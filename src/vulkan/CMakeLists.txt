@@ -27,7 +27,7 @@ cmake_minimum_required(VERSION 2.8.12)
 project(MagnumVulkanExample)
 
 find_package(Magnum REQUIRED
-    Shaders
+    Vk
     GlfwApplication)
 
 set_directory_properties(PROPERTIES CORRADE_USE_PEDANTIC_FLAGS ON)
@@ -36,7 +36,7 @@ add_executable(magnum-vulkan VulkanExample.cpp)
 target_link_libraries(magnum-vulkan
     Magnum::GlfwApplication
     Magnum::Magnum
-    Magnum::Shaders)
+    Magnum::Vk)
 
 install(TARGETS magnum-vulkan DESTINATION ${MAGNUM_BINARY_INSTALL_DIR})
 install(FILES README.md DESTINATION ${MAGNUM_DATA_INSTALL_DIR}/examples RENAME README-triangle.md)
