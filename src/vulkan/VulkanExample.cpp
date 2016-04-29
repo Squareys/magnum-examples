@@ -26,11 +26,12 @@
 #include <Magnum/Math/Vector3.h>
 #include <Magnum/Platform/GlfwApplication.h>
 #include <Magnum/Vk/Context.h>
+#include <Magnum/Math/Matrix4.h>
 #include <Corrade/Containers/Array.h>
 
 #include <cstring> // for memcpy
 
-
+// TODO: Very unsafe enum.
 #define MAGNUM_VK_ASSERT_ERROR(err) \
     if(err != VK_SUCCESS) {         \
         Error()<< "(File:" << __FILE__ << ", Line:" << __LINE__ << ") Vulkan error:" << Vk::Result(err);   \
@@ -780,8 +781,22 @@ class VulkanExample: public Platform::Application {
         VkRenderPass _renderPass;
         VkPipelineCache _pipelineCache;
         std::vector<VkFramebuffer> _frameBuffers;
+        VkBuffer _vertexBuffer;
+        VkDeviceMemory _vertexBufferMemory;
+        VkBuffer _indexBuffer;
+        VkDeviceMemory _indexBufferMemory;
 
         std::vector<CommandBuffer> _drawCmdBuffers;
+
+        struct {
+            Matrix4 projectionMatrix;
+            Matrix4 modelMatrix;
+            Matrix4 viewMatrix;
+        } _uniforms;
+
+        VkBuffer _uniformBuffer;
+        VkDeviceMemory _uniformBufferMemory;
+        VkDescriptorBufferInfo _uniformDescriptor;
 };
 
 VulkanExample::VulkanExample(const Arguments& arguments)
@@ -1049,11 +1064,10 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     VkDeviceMemory vMemory;
     VkBuffer vBuffer;
 
-    std::unique_ptr<CommandBuffer> copyToDeviceCmds = _cmdPool->allocateCommandBuffer(*_device, CommandBuffer::Level::Primary);
-
     VkBufferCreateInfo vBufInfo = {};
     vBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     vBufInfo.pNext = nullptr;
+    vBufInfo.size = sizeof(Vector3) * 6;
 
     vBufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     err = vkCreateBuffer(_device->vkDevice(), &vBufInfo, nullptr, &vBuffer);
@@ -1067,7 +1081,8 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     memAlloc.pNext = nullptr;
     memAlloc.allocationSize = memReqs.size;
 
-    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &memAlloc.memoryTypeIndex);
+    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                                  &memAlloc.memoryTypeIndex);
     err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &vMemory);
     MAGNUM_VK_ASSERT_ERROR(err);
 
@@ -1075,7 +1090,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     err = vkMapMemory(_device->vkDevice(), vMemory, 0, memAlloc.allocationSize, 0, &data);
     MAGNUM_VK_ASSERT_ERROR(err);
 
-    std::memcpy(data, vertexData, sizeof(float)*6); // argh, is there something better than this in C++11?
+    std::memcpy(data, vertexData, vBufInfo.size); // argh, is there something better than this in C++11?
 
     vkUnmapMemory(_device->vkDevice(), vMemory);
 
@@ -1083,8 +1098,218 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     MAGNUM_VK_ASSERT_ERROR(err);
 
     vBufInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    err = vkCreateBuffer(_device->vkDevice(), vBufInfo, nullptr, /* new buffer here! */ );
+    err = vkCreateBuffer(_device->vkDevice(), &vBufInfo, nullptr, &_vertexBuffer);
     MAGNUM_VK_ASSERT_ERROR(err);
+
+    vkGetBufferMemoryRequirements(_device->vkDevice(), _vertexBuffer, &memReqs);
+
+    memAlloc.allocationSize = memReqs.size;
+
+    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                  &memAlloc.memoryTypeIndex);
+
+    err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &_vertexBufferMemory);
+    MAGNUM_VK_ASSERT_ERROR(err);
+    err = vkBindBufferMemory(_device->vkDevice(), _vertexBuffer, _vertexBufferMemory, 0);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    VkBufferCreateInfo iBufInfo = {};
+    iBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    iBufInfo.size = sizeof(UnsignedByte) * 3;
+    iBufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+    err = vkCreateBuffer(_device->vkDevice(), &iBufInfo, nullptr, &iBuffer);
+    MAGNUM_VK_ASSERT_ERROR(err);
+    vkGetBufferMemoryRequirements(_device->vkDevice(), iBuffer, &memReqs);
+
+    memAlloc.allocationSize = memReqs.size;
+    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &memAlloc.memoryTypeIndex);
+
+    err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &iMemory);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    vkMapMemory(_device->vkDevice(), iMemory, 0, memAlloc.allocationSize, 0, &data);
+    memcpy(data, indices, iBufInfo.size);
+    vkUnmapMemory(_device->vkDevice(), iMemory);
+
+    err = vkBindBufferMemory(_device->vkDevice(), iBuffer, iMemory, 0);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    iBufInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    err = vkCreateBuffer(_device->vkDevice(), &iBufInfo, nullptr, &_indexBuffer);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    vkGetBufferMemoryRequirements(_device->vkDevice(), _indexBuffer, &memReqs);
+    memAlloc.allocationSize = memReqs.size;
+    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &memAlloc.memoryTypeIndex);
+
+    err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &_indexBufferMemory);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    err = vkBindBufferMemory(_device->vkDevice(), _indexBuffer, _indexBufferMemory, 0);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    VkBufferCopy copyRegion = {};
+    std::unique_ptr<CommandBuffer> copyToDeviceCmds = _cmdPool->allocateCommandBuffer(*_device, CommandBuffer::Level::Primary);
+    copyToDeviceCmds->begin();
+
+    copyRegion.size = vBufInfo.size;
+    vkCmdCopyBuffer(copyToDeviceCmds->vkCommandBuffer(), vBuffer, _vertexBuffer, 1, &copyRegion);
+
+    copyRegion.size = iBufInfo.size;
+    vkCmdCopyBuffer(copyToDeviceCmds->vkCommandBuffer(), iBuffer, _indexBuffer, 1, &copyRegion);
+
+    copyToDeviceCmds->end();
+
+    _queue->submit(*copyToDeviceCmds);
+    _queue->waitIdle();
+
+    vkDestroyBuffer(_device->vkDevice(), vBuffer, nullptr);
+    vkFreeMemory(_device->vkDevice(), vMemory, nullptr);
+    vkDestroyBuffer(_device->vkDevice(), iBuffer, nullptr);
+    vkFreeMemory(_device->vkDevice(), iMemory, nullptr);
+
+    VkVertexInputBindingDescription bindingDesc;
+    bindingDesc.binding = 0;
+    bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    bindingDesc.stride = sizeof(Vector3);
+
+    // Position
+    VkVertexInputAttributeDescription attributeDesc[2];
+    attributeDesc[0].binding = 0;
+    attributeDesc[0].location = 0;
+    attributeDesc[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDesc[0].offset = 0;
+
+    // Color
+    attributeDesc[1].binding = 0;
+    attributeDesc[1].location = 1;
+    attributeDesc[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDesc[1].offset = sizeof(Vector3);
+
+    VkPipelineVertexInputStateCreateInfo pvisci = {};
+    pvisci.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    pvisci.pNext = nullptr;
+    pvisci.vertexBindingDescriptionCount = 1;
+    pvisci.pVertexBindingDescriptions = &bindingDesc;
+    pvisci.vertexAttributeDescriptionCount = 2;
+    pvisci.pVertexAttributeDescriptions = attributeDesc;
+
+    /* Uniform Buffer */
+    VkBufferCreateInfo uBufInfo = {};
+    uBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    uBufInfo.pNext = nullptr;
+    uBufInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    uBufInfo.size = sizeof(_uniforms);
+    err = vkCreateBuffer(_device->vkDevice(), &uBufInfo, nullptr, &_uniformBuffer);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    vkGetBufferMemoryRequirements(_device->vkDevice(), _uniformBuffer, &memReqs);
+    memAlloc.allocationSize = memReqs.size;
+    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &memAlloc.memoryTypeIndex);
+
+    err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &_uniformBufferMemory);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    err = vkBindBufferMemory(_device->vkDevice(), _uniformBuffer, _uniformBufferMemory, 0);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+
+    _uniformDescriptor.buffer = _uniformBuffer;
+    _uniformDescriptor.offset = 0;
+    _uniformDescriptor.range = uBufInfo.size;
+
+    // udate unforms
+    _uniforms.projectionMatrix = Matrix4::perspectiveProjection(Deg(60.0f), 800.0f/600.0f, 0.1f, 256.0f);
+    _uniforms.viewMatrix = Matrix4{};
+    _uniforms.modelMatrix = Matrix4{};
+
+    // map and update the buffers memory
+    err = vkMapMemory(_device.vkDevice(), _uniformBufferMemory, 0, sizeof(_uniforms), 0, &data);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    memcpy(data, &_uniforms, uBufInfo.size);
+    vkUnmapMemory(_device->vkDevice(), _uniformBufferMemory);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    // setup descriptor set layout
+    VkDescriptorSetLayoutBinding layout = {};
+    layout.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    layout.descriptorCount = 1;
+    layout.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    layout.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutCreateInfo descLayout = {};
+    descLayout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descLayout.pNext = nullptr;
+    descLayout.bindingCount = 1;
+    descLayout.pBindings = &layout;
+
+    VkDescriptorSetLayout descriptorSetLayout;
+    err = vkCreateDescriptorSetLayout(_device->vkDevice(), &descLayout, nullptr, &descriptorSetLayout);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+
+    VkPipelineLayoutCreateInfo plInfo = {};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.pNext = nullptr;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &descriptorSetLayout;
+
+    VkPipelineLayout pipelineLayout;
+    err = vkCreatePipelineLayout(_device->vkDevice(), &plInfo, nullptr, &pipelineLayout);
+    MAGNUM_VK_ASSERT_ERROR(err);
+
+    // Pipeline! :D
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.pNext = nullptr;
+    pipelineInfo.layout = pipelineLayout;
+    pipelineInfo.renderPass = _renderPass;
+
+    // Vertex input state
+    VkPipelineInputAssemblyStateCreateInfo inputAssemblyState = {};
+    inputAssemblyState.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssemblyState.pNext = nullptr;
+    inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    // Rasterization state
+    VkPipelineRasterizationStateCreateInfo rasterizationState = {};
+    rasterizationState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizationState.pNext = nullptr;
+    rasterizationState.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizationState.cullMode = VK_CULL_MODE_NONE;
+    rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // Not that it matters...
+    rasterizationState.depthClampEnable = VK_FALSE;
+    rasterizationState.rasterizerDiscardEnable = VK_FALSE;
+    rasterizationState.depthBiasEnable = VK_FALSE;
+
+    // blend state
+    VkPipelineColorBlendStateCreateInfo blendState = {};
+    blendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blendState.pNext = nullptr;
+
+    VkPipelineColorBlendAttachmentState blendAttachmentState = {};
+    blendAttachmentState.colorWriteMask = 0xf;
+    blendAttachmentState.blendEnable = VK_FALSE;
+
+    blendState.attachmentCount = 1;
+    blendState.pAttachments = &blendAttachmentState;
+
+    // viewport state
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.pNext = nullptr;
+    viewportState.viewportCount = 1;
+    VkViewport viewport = {0.0f, 0.0f, 1.0f, 1.0f,
+                           float    y;
+                           float    width;
+                           float    height;
+                           float    minDepth;
+                           float    maxDepth;};
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 0;
+    viewportState.pScissors = nullptr;
 }
 
 VulkanExample::~VulkanExample() {
