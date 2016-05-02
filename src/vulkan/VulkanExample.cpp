@@ -129,12 +129,14 @@ class Device;
 class Semaphore {
     public:
 
-        Semaphore() = default;
-        Semaphore(const VkSemaphore& sem): _semaphore{sem}{}
+        Semaphore(const VkSemaphore& sem, Device& device):
+            _semaphore{sem},
+            _device{device} {
+        }
 
         Semaphore(const Semaphore& sem) = delete;
 
-        Semaphore(Semaphore&& sem): _semaphore{sem.vkSemaphore()} {
+        Semaphore(Semaphore&& sem): _semaphore{sem.vkSemaphore()}, _device{sem._device} {
             sem._semaphore = VK_NULL_HANDLE;
         }
         ~Semaphore();
@@ -154,7 +156,10 @@ class Semaphore {
 
     private:
         VkSemaphore _semaphore = VK_NULL_HANDLE;
+        Device& _device;
 };
+
+class CommandPool;
 
 class CommandBuffer {
     public:
@@ -164,12 +169,15 @@ class CommandBuffer {
             Secondary = VK_COMMAND_BUFFER_LEVEL_SECONDARY
         };
 
-        CommandBuffer() = default;
-
-        CommandBuffer(VkCommandBuffer buffer): _cmdBuffer{buffer} {
+        CommandBuffer(VkCommandBuffer buffer, Device& device, CommandPool& cmdPool):
+            _cmdBuffer{buffer},
+            _device{device},
+            _commandPool{cmdPool} {
         }
 
         CommandBuffer(const CommandBuffer&) = delete;
+
+        ~CommandBuffer();
 
         CommandBuffer& begin() {
             VkCommandBufferBeginInfo cmdBufInfo = {};
@@ -192,6 +200,8 @@ class CommandBuffer {
 
     private:
         VkCommandBuffer _cmdBuffer;
+        Device& _device;
+        CommandPool& _commandPool;
 };
 
 class CommandPool {
@@ -199,15 +209,24 @@ class CommandPool {
 
         CommandPool() = default;
 
-        CommandPool(VkCommandPool pool): _cmdPool{pool} {
+        CommandPool(VkCommandPool pool, Device& device):
+            _cmdPool{pool},
+            _device{device} {
         }
 
         CommandPool(const CommandPool&) = delete;
 
-        std::unique_ptr<CommandBuffer> allocateCommandBuffer(Device& device, CommandBuffer::Level level);
+        ~CommandPool();
+
+        VkCommandPool vkCommandPool() {
+            return _cmdPool;
+        }
+
+        std::unique_ptr<CommandBuffer> allocateCommandBuffer(CommandBuffer::Level level);
 
     private:
         VkCommandPool _cmdPool;
+        Device& _device;
 };
 
 class Queue {
@@ -217,6 +236,9 @@ class Queue {
         }
 
         Queue(const Queue&) = delete;
+
+        ~Queue() {
+        }
 
         Queue& submit(CommandBuffer& cmdBuffer) {
             VkCommandBuffer cb = cmdBuffer.vkCommandBuffer();
@@ -244,22 +266,21 @@ class Queue {
             submitInfo.commandBufferCount = 1;
             submitInfo.pCommandBuffers = &cb;
 
-
-            VkSemaphore waitSems[waitSemaphores.size()];
-            int i = 0;
+            std::vector<VkSemaphore> waitSems;
+            waitSems.reserve(waitSemaphores.size());
             for(Semaphore& sem : waitSemaphores) {
-                waitSems[i++] = sem.vkSemaphore();
+                waitSems.push_back(sem.vkSemaphore());
             }
 
-            VkSemaphore sigSems[signalSemaphores.size()];
-            i = 0;
+            std::vector<VkSemaphore> sigSems;
+            sigSems.reserve(waitSemaphores.size());
             for(Semaphore& sem : signalSemaphores) {
-                sigSems[i++] = sem.vkSemaphore();
+                sigSems.push_back(sem.vkSemaphore());
             }
             submitInfo.waitSemaphoreCount = waitSemaphores.size();
-            submitInfo.pWaitSemaphores = waitSems;
+            submitInfo.pWaitSemaphores = waitSems.data();
             submitInfo.signalSemaphoreCount = signalSemaphores.size();
-            submitInfo.pSignalSemaphores = sigSems;
+            submitInfo.pSignalSemaphores = sigSems.data();
 
             VkResult err = vkQueueSubmit(_queue, 1, &submitInfo, VK_NULL_HANDLE);
             MAGNUM_VK_ASSERT_ERROR(err);
@@ -338,7 +359,7 @@ class Device {
             VkResult err = vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &semaphore);
             MAGNUM_VK_ASSERT_ERROR(err);
 
-            return std::unique_ptr<Semaphore>{new Semaphore{semaphore}};
+            return std::unique_ptr<Semaphore>{new Semaphore{semaphore, *this}};
         }
 
         std::unique_ptr<CommandPool> createCommandPool(const UnsignedInt queueFamilyIndex);
@@ -359,10 +380,11 @@ class Device {
 };
 
 Semaphore::~Semaphore(){
-    if (_semaphore == VK_NULL_HANDLE) {
-        return;
-    }
-    //vkDestroySemaphore(_device->vkDevice(), _semaphore, nullptr);
+    vkDestroySemaphore(_device.vkDevice(), _semaphore, nullptr);
+}
+
+CommandBuffer::~CommandBuffer() {
+    vkFreeCommandBuffers(_device.vkDevice(), _commandPool.vkCommandPool(), 1, &_cmdBuffer);
 }
 
 std::unique_ptr<CommandPool> Device::createCommandPool(const UnsignedInt queueFamilyIndex){
@@ -373,10 +395,10 @@ std::unique_ptr<CommandPool> Device::createCommandPool(const UnsignedInt queueFa
    cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
    vkCreateCommandPool(_device, &cmdPoolInfo, nullptr, &cmdPool);
 
-   return std::unique_ptr<CommandPool>{new CommandPool(cmdPool)};
+   return std::unique_ptr<CommandPool>{new CommandPool(cmdPool, *this)};
 }
 
-std::unique_ptr<CommandBuffer> CommandPool::allocateCommandBuffer(Device& device, CommandBuffer::Level level) {
+std::unique_ptr<CommandBuffer> CommandPool::allocateCommandBuffer(CommandBuffer::Level level) {
     VkCommandBuffer cmdBuffer;
     VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
     commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -384,9 +406,13 @@ std::unique_ptr<CommandBuffer> CommandPool::allocateCommandBuffer(Device& device
     commandBufferAllocateInfo.level = VkCommandBufferLevel(level);
     commandBufferAllocateInfo.commandBufferCount = 1;
 
-    vkAllocateCommandBuffers(device.vkDevice(), &commandBufferAllocateInfo, &cmdBuffer);
+    vkAllocateCommandBuffers(_device.vkDevice(), &commandBufferAllocateInfo, &cmdBuffer);
 
-    return std::unique_ptr<CommandBuffer>{new CommandBuffer{cmdBuffer}};
+    return std::unique_ptr<CommandBuffer>{new CommandBuffer{cmdBuffer, _device, *this}};
+}
+
+CommandPool::~CommandPool() {
+    vkDestroyCommandPool(_device.vkDevice(), _cmdPool, nullptr);
 }
 
 #define GET_INSTANCE_PROC_ADDR(inst, entrypoint) vk##entrypoint = PFN_vk##entrypoint(vkGetInstanceProcAddr(inst, "vk"#entrypoint)); if(vk##entrypoint == nullptr) { Error() << "Failed to get function pointer.";} do{}while(false)
@@ -410,6 +436,9 @@ class SwapChain {
         PFN_vkAcquireNextImageKHR vkAcquireNextImageKHR;
         PFN_vkQueuePresentKHR vkQueuePresentKHR;
 
+        Device* _device;
+        VkSurfaceKHR _surface;
+
     public:
         VkFormat colorFormat = VK_FORMAT_B8G8R8A8_UNORM;
         VkColorSpaceKHR colorSpace;
@@ -423,9 +452,10 @@ class SwapChain {
         // Index of the deteced graphics and presenting device queue
         uint32_t queueNodeIndex = UINT32_MAX;
 
-
         // Connect to the instance und device and get all required function pointers
         void connect(Device& device) {
+            _device = &device;
+
             GET_INSTANCE_PROC_ADDR(Vk::Context::current().vkInstance(), GetPhysicalDeviceSurfaceSupportKHR);
             GET_INSTANCE_PROC_ADDR(Vk::Context::current().vkInstance(), GetPhysicalDeviceSurfaceCapabilitiesKHR);
             GET_INSTANCE_PROC_ADDR(Vk::Context::current().vkInstance(), GetPhysicalDeviceSurfaceFormatsKHR);
@@ -440,8 +470,9 @@ class SwapChain {
 
         // Creates an os specific surface
         // Tries to find a graphics and a present queue
-        void create(Device& device, PhysicalDevice& physicalDevice, CommandBuffer& cb, VkSurfaceKHR surface) {
+        void create(PhysicalDevice& physicalDevice, CommandBuffer& cb, VkSurfaceKHR surface) {
             VkResult err;
+            _surface = surface;
 
             // Get available queue family properties
             uint32_t queueCount;
@@ -606,21 +637,21 @@ class SwapChain {
             swapchainCI.clipped = VK_TRUE;
             swapchainCI.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 
-            err = vkCreateSwapchainKHR(device.vkDevice(), &swapchainCI, nullptr, &swapChain);
+            err = vkCreateSwapchainKHR(_device->vkDevice(), &swapchainCI, nullptr, &swapChain);
             MAGNUM_VK_ASSERT_ERROR(err);
 
             // If an existing sawp chain is re-created, destroy the old swap chain
             // This also cleans up all the presentable images
             if (oldSwapchain != VK_NULL_HANDLE) {
-                vkDestroySwapchainKHR(device.vkDevice(), oldSwapchain, nullptr);
+                vkDestroySwapchainKHR(_device->vkDevice(), oldSwapchain, nullptr);
             }
 
-            err = vkGetSwapchainImagesKHR(device.vkDevice(), swapChain, &imageCount, nullptr);
+            err = vkGetSwapchainImagesKHR(_device->vkDevice(), swapChain, &imageCount, nullptr);
             MAGNUM_VK_ASSERT_ERROR(err);
 
             // Get the swap chain images
             images.resize(imageCount);
-            err = vkGetSwapchainImagesKHR(device.vkDevice(), swapChain, &imageCount, images.data());
+            err = vkGetSwapchainImagesKHR(_device->vkDevice(), swapChain, &imageCount, images.data());
             MAGNUM_VK_ASSERT_ERROR(err);
 
             // Get the swap chain buffers containing the image and imageview
@@ -684,14 +715,14 @@ class SwapChain {
 
                 colorAttachmentView.image = buffers[i].image;
 
-                err = vkCreateImageView(device.vkDevice(), &colorAttachmentView, nullptr, &buffers[i].view);
+                err = vkCreateImageView(_device->vkDevice(), &colorAttachmentView, nullptr, &buffers[i].view);
                 MAGNUM_VK_ASSERT_ERROR(err);
             }
         }
 
         // Acquires the next image in the swap chain
-        VkResult acquireNextImage(Device& device, Semaphore& presentCompleteSemaphore, uint32_t* currentBuffer) {
-            return vkAcquireNextImageKHR(device.vkDevice(),
+        VkResult acquireNextImage(Semaphore& presentCompleteSemaphore, uint32_t* currentBuffer) {
+            return vkAcquireNextImageKHR(_device->vkDevice(),
                                          swapChain, UINT64_MAX, presentCompleteSemaphore.vkSemaphore(),
                                          VkFence(nullptr), currentBuffer);
         }
@@ -722,12 +753,12 @@ class SwapChain {
         }
 
         // Free all Vulkan resources used by the swap chain
-        void cleanup(Device& device, VkSurfaceKHR surface) {
+        ~SwapChain() {
             for (uint32_t i = 0; i < imageCount; i++) {
-                vkDestroyImageView(device.vkDevice(), buffers[i].view, nullptr);
+                vkDestroyImageView(_device->vkDevice(), buffers[i].view, nullptr);
             }
-            vkDestroySwapchainKHR(device.vkDevice(), swapChain, nullptr);
-            vkDestroySurfaceKHR(Vk::Context::current().vkInstance(), surface, nullptr);
+            vkDestroySwapchainKHR(_device->vkDevice(), swapChain, nullptr);
+            vkDestroySurfaceKHR(Vk::Context::current().vkInstance(), _surface, nullptr);
         }
 };
 
@@ -838,14 +869,20 @@ class VulkanExample: public Platform::Application {
         VkDeviceMemory _uniformBufferMemory;
         VkDescriptorBufferInfo _uniformDescriptor;
         VkPipelineCache _pipelineCache;
+        VkPipelineLayout _pipelineLayout;
         VkPipeline _pipeline;
         VkDescriptorPool _deadpool;
         VkDescriptorSet _descriptorSet;
+        VkDescriptorSetLayout _descriptorSetLayout;
+        VkPipelineShaderStageCreateInfo _shaderStages[2];
+
+        Float _rot;
 };
 
 VulkanExample::VulkanExample(const Arguments& arguments)
     : Platform::Application{arguments, Configuration{}.setTitle("Magnum Vulkan Triangle Example")},
-      _context{{Vk::Context::Flag::EnableValidation}}
+      _context{{Vk::Context::Flag::EnableValidation}},
+      _rot{0.0f}
 {
     bool enableValidation = true;
 
@@ -911,7 +948,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _cmdPool = _device->createCommandPool(0);
 
 
-    _setupCmdBuffer = _cmdPool->allocateCommandBuffer(*_device, CommandBuffer::Level::Primary);
+    _setupCmdBuffer = _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
     _setupCmdBuffer->begin();
 
     // Create surface depending on OS
@@ -923,14 +960,12 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     MAGNUM_VK_ASSERT_ERROR(err);
 
     _swapChain.connect(*_device.get());
-    _swapChain.create(*_device.get(), _physicalDevice, *_setupCmdBuffer, _surface);
+    _swapChain.create(_physicalDevice, *_setupCmdBuffer, _surface);
 
     _cmdBuffers.prePresent =
-            _cmdPool->allocateCommandBuffer(*_device.get(),
-                                            CommandBuffer::Level::Primary);
+            _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
     _cmdBuffers.postPresent =
-            _cmdPool->allocateCommandBuffer(*_device.get(),
-                                            CommandBuffer::Level::Primary);
+            _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
 
     VkImageCreateInfo image = {};
     image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -1100,7 +1135,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
         { 1.0f,  1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f },
         { -1.0f,  1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f },
         { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }};
-    static constexpr UnsignedShort indices[] {
+    static constexpr UnsignedInt indices[] {
         0, 1, 2
     };
 
@@ -1112,8 +1147,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     VkBufferCreateInfo vBufInfo = {};
     vBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     vBufInfo.pNext = nullptr;
-    vBufInfo.size = sizeof(Vector3) * 6;
-
+    vBufInfo.size = sizeof(vertexData);
     vBufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     err = vkCreateBuffer(_device->vkDevice(), &vBufInfo, nullptr, &vBuffer);
     MAGNUM_VK_ASSERT_ERROR(err);
@@ -1121,6 +1155,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     vkGetBufferMemoryRequirements(_device->vkDevice(), vBuffer, &memReqs);
     MAGNUM_VK_ASSERT_ERROR(err);
 
+    Debug() << "Memory requirements:" << memReqs.size;
     VkMemoryAllocateInfo memAlloc = {};
     memAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     memAlloc.pNext = nullptr;
@@ -1136,7 +1171,6 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     MAGNUM_VK_ASSERT_ERROR(err);
 
     std::memcpy(data, vertexData, vBufInfo.size); // argh, is there something better than this in C++11?
-
     vkUnmapMemory(_device->vkDevice(), vMemory);
 
     err = vkBindBufferMemory(_device->vkDevice(), vBuffer, vMemory, 0);
@@ -1147,6 +1181,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     MAGNUM_VK_ASSERT_ERROR(err);
 
     vkGetBufferMemoryRequirements(_device->vkDevice(), _vertexBuffer, &memReqs);
+    Debug() << "Memory requirements:" << memReqs.size;
     memAlloc.allocationSize = memReqs.size;
     _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                   &memAlloc.memoryTypeIndex);
@@ -1158,7 +1193,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     VkBufferCreateInfo iBufInfo = {};
     iBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    iBufInfo.size = sizeof(UnsignedShort) * 3;
+    iBufInfo.size = sizeof(indices);
     iBufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
     err = vkCreateBuffer(_device->vkDevice(), &iBufInfo, nullptr, &iBuffer);
@@ -1193,7 +1228,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     MAGNUM_VK_ASSERT_ERROR(err);
 
     VkBufferCopy copyRegion = {};
-    std::unique_ptr<CommandBuffer> copyToDeviceCmds = _cmdPool->allocateCommandBuffer(*_device, CommandBuffer::Level::Primary);
+    std::unique_ptr<CommandBuffer> copyToDeviceCmds = _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
     copyToDeviceCmds->begin();
 
     copyRegion.size = vBufInfo.size;
@@ -1204,8 +1239,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     copyToDeviceCmds->end();
 
-    _queue->submit(*copyToDeviceCmds);
-    _queue->waitIdle();
+    _queue->submit(*copyToDeviceCmds).waitIdle();
 
     vkDestroyBuffer(_device->vkDevice(), vBuffer, nullptr);
     vkFreeMemory(_device->vkDevice(), vMemory, nullptr);
@@ -1215,7 +1249,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     VkVertexInputBindingDescription bindingDesc;
     bindingDesc.binding = 0;
     bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    bindingDesc.stride = sizeof(Vector3);
+    bindingDesc.stride = sizeof(Vector3)*2;
 
     // Position
     VkVertexInputAttributeDescription attributeDesc[2];
@@ -1261,10 +1295,13 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _uniformDescriptor.offset = 0;
     _uniformDescriptor.range = uBufInfo.size;
 
-    // udate unforms, TODO: matrix 0-1 clipping range
+    // TODO: Clipping Range 0-1
     _uniforms.projectionMatrix = Matrix4::perspectiveProjection(Deg(60.0f), 800.0f/600.0f, 0.1f, 256.0f);
-    _uniforms.viewMatrix = Matrix4{};
+    _uniforms.viewMatrix = Matrix4::translation(Vector3{0.0f, 0.0f, -2.5f});
     _uniforms.modelMatrix = Matrix4{};
+
+    Debug() << "Projection:";
+    Debug() << _uniforms.projectionMatrix;
 
     // map and update the buffers memory
     err = vkMapMemory(_device->vkDevice(), _uniformBufferMemory, 0, uBufInfo.size, 0, &data);
@@ -1287,8 +1324,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     descLayout.bindingCount = 1;
     descLayout.pBindings = &layoutBinding;
 
-    VkDescriptorSetLayout descriptorSetLayout;
-    err = vkCreateDescriptorSetLayout(_device->vkDevice(), &descLayout, nullptr, &descriptorSetLayout);
+    err = vkCreateDescriptorSetLayout(_device->vkDevice(), &descLayout, nullptr, &_descriptorSetLayout);
     MAGNUM_VK_ASSERT_ERROR(err);
 
 
@@ -1296,10 +1332,9 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plInfo.pNext = nullptr;
     plInfo.setLayoutCount = 1;
-    plInfo.pSetLayouts = &descriptorSetLayout;
+    plInfo.pSetLayouts = &_descriptorSetLayout;
 
-    VkPipelineLayout pipelineLayout;
-    err = vkCreatePipelineLayout(_device->vkDevice(), &plInfo, nullptr, &pipelineLayout);
+    err = vkCreatePipelineLayout(_device->vkDevice(), &plInfo, nullptr, &_pipelineLayout);
     MAGNUM_VK_ASSERT_ERROR(err);
 
     // Pipeline! :D
@@ -1319,6 +1354,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     rasterizationState.depthClampEnable = VK_FALSE;
     rasterizationState.rasterizerDiscardEnable = VK_FALSE;
     rasterizationState.depthBiasEnable = VK_FALSE;
+    rasterizationState.lineWidth = 1.0f;
 
     // blend state
     VkPipelineColorBlendStateCreateInfo blendState = {};
@@ -1339,7 +1375,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
 
-    VkPipelineDynamicStateCreateInfo dynamicState = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr};
+    VkPipelineDynamicStateCreateInfo dynamicState = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0};
     VkDynamicState dynamicStateEnables[2]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     dynamicState.pDynamicStates = dynamicStateEnables;
     dynamicState.dynamicStateCount = 2;
@@ -1347,34 +1383,32 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     VkPipelineDepthStencilStateCreateInfo depthStencilState = {};
     depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencilState.pNext = nullptr;
-    depthStencilState.depthTestEnable = VK_FALSE;
-    depthStencilState.depthWriteEnable = VK_FALSE;
+    depthStencilState.depthTestEnable = VK_TRUE; // TODO: We don't need this...
+    depthStencilState.depthWriteEnable = VK_TRUE; // TODO: We don't need this...
     depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     depthStencilState.depthBoundsTestEnable = VK_FALSE;
     depthStencilState.back.failOp = VK_STENCIL_OP_KEEP;
     depthStencilState.back.passOp = VK_STENCIL_OP_KEEP;
-    depthStencilState.back.compareOp = VK_COMPARE_OP_NEVER;
+    depthStencilState.back.compareOp = VK_COMPARE_OP_ALWAYS;
     depthStencilState.stencilTestEnable = VK_FALSE;
     depthStencilState.front = depthStencilState.back;
 
     // multi sample state
-    VkPipelineMultisampleStateCreateInfo multisampleState = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr};
+    VkPipelineMultisampleStateCreateInfo multisampleState = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0};
     multisampleState.pSampleMask = nullptr;
     multisampleState.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     //multisampleState.sampleShadingEnable = VK_FALSE; // this is unnecessary, though.
     //multisampleState.alphaToCoverageEnable = VK_FALSE;
     //multisampleState.alphaToOneEnable = VK_FALSE;
 
-    VkPipelineShaderStageCreateInfo shaderStages[2] = {{}, {}};
-    shaderStages[0] = loadShader(*_device, "./shaders/triangle.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
-    shaderStages[1] = loadShader(*_device, "./shaders/triangle.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+    _shaderStages[0] = loadShader(*_device, "./shaders/triangle.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+    _shaderStages[1] = loadShader(*_device, "./shaders/triangle.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 
     VkGraphicsPipelineCreateInfo pipelineInfo = {};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineInfo.pNext = nullptr;
-    pipelineInfo.layout = pipelineLayout;
+    pipelineInfo.layout = _pipelineLayout;
     pipelineInfo.renderPass = _renderPass;
-    pipelineInfo.stageCount = 2;
     pipelineInfo.pInputAssemblyState = &inputAssemblyState;
     pipelineInfo.pVertexInputState = &pvisci;
     pipelineInfo.pRasterizationState = &rasterizationState;
@@ -1382,7 +1416,8 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     pipelineInfo.pMultisampleState = &multisampleState;
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pDepthStencilState = &depthStencilState;
-    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = _shaderStages;
     pipelineInfo.pDynamicState = &dynamicState;
 
     VkPipelineCacheCreateInfo pipelineCacheCreateInfo = {};
@@ -1412,7 +1447,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     dSetInfo.pNext = nullptr;
     dSetInfo.descriptorPool = _deadpool;
     dSetInfo.descriptorSetCount = 1;
-    dSetInfo.pSetLayouts = &descriptorSetLayout;
+    dSetInfo.pSetLayouts = &_descriptorSetLayout;
 
     err = vkAllocateDescriptorSets(_device->vkDevice(), &dSetInfo, &_descriptorSet);
     MAGNUM_VK_ASSERT_ERROR(err);
@@ -1447,8 +1482,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     _drawCmdBuffers.resize(_swapChain.imageCount);
     for(UnsignedInt i = 0; i < _drawCmdBuffers.size(); ++i) {
-        _drawCmdBuffers[i] = _cmdPool->allocateCommandBuffer(*_device,
-                                                             CommandBuffer::Level::Primary);
+        _drawCmdBuffers[i] = _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
         CommandBuffer& cmdBuffer = *(_drawCmdBuffers[i]);
 
         renderPassBeginInfo.framebuffer = _frameBuffers[i];
@@ -1465,7 +1499,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
         vkCmdBindDescriptorSets(cmdBuffer.vkCommandBuffer(),
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipelineLayout, 0, 1, &_descriptorSet, 0, nullptr);
+                                _pipelineLayout, 0, 1, &_descriptorSet, 0, nullptr);
 
         vkCmdBindPipeline(cmdBuffer.vkCommandBuffer(),
                           VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1473,7 +1507,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmdBuffer.vkCommandBuffer(), 0, 1, &_vertexBuffer, &offset);
-        vkCmdBindIndexBuffer(cmdBuffer.vkCommandBuffer(), _indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(cmdBuffer.vkCommandBuffer(), _indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
         vkCmdDrawIndexed(cmdBuffer.vkCommandBuffer(), 3, 1, 0, 0, 1);
 
@@ -1501,6 +1535,35 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 }
 
 VulkanExample::~VulkanExample() {
+    vkDestroyBuffer(_device->vkDevice(), _vertexBuffer, nullptr);
+    vkDestroyBuffer(_device->vkDevice(), _indexBuffer, nullptr);
+    vkDestroyBuffer(_device->vkDevice(), _uniformBuffer, nullptr);
+
+    vkDestroyImageView(_device->vkDevice(), _depthStencil.view, nullptr);
+
+    vkDestroyImage(_device->vkDevice(), _depthStencil.image, nullptr);
+
+    vkFreeMemory(_device->vkDevice(), _vertexBufferMemory, nullptr);
+    vkFreeMemory(_device->vkDevice(), _indexBufferMemory, nullptr);
+    vkFreeMemory(_device->vkDevice(), _uniformBufferMemory, nullptr);
+    vkFreeMemory(_device->vkDevice(), _depthStencil.mem, nullptr);
+
+    vkDestroyShaderModule(_device->vkDevice(), _shaderStages[0].module, nullptr);
+    vkDestroyShaderModule(_device->vkDevice(), _shaderStages[1].module, nullptr);
+
+    vkDestroyPipelineCache(_device->vkDevice(), _pipelineCache, nullptr);
+    vkDestroyPipelineLayout(_device->vkDevice(), _pipelineLayout, nullptr);
+    vkDestroyPipeline(_device->vkDevice(), _pipeline, nullptr);
+
+    vkDestroyRenderPass(_device->vkDevice(), _renderPass, nullptr);
+
+    vkFreeDescriptorSets(_device->vkDevice(), _deadpool, 1, &_descriptorSet);
+    vkDestroyDescriptorPool(_device->vkDevice(), _deadpool, nullptr);
+    vkDestroyDescriptorSetLayout(_device->vkDevice(), _descriptorSetLayout, nullptr);
+
+    for(VkFramebuffer& fb : _frameBuffers) {
+        vkDestroyFramebuffer(_device->vkDevice(), fb, nullptr);
+    }
 }
 
 void VulkanExample::drawEvent() {
@@ -1510,7 +1573,7 @@ void VulkanExample::drawEvent() {
 
     VkResult err;
     // Get next image in the swap chain (back/front buffer)
-    err = _swapChain.acquireNextImage(*_device, *_semaphores.presentComplete,
+    err = _swapChain.acquireNextImage(*_semaphores.presentComplete,
                                       &currentBuffer);
     MAGNUM_VK_ASSERT_ERROR(err);
 
@@ -1545,9 +1608,7 @@ void VulkanExample::drawEvent() {
 
     _cmdBuffers.postPresent->end();
 
-    _queue->submit(*_cmdBuffers.postPresent)
-           .waitIdle();
-
+    _queue->submit(*_cmdBuffers.postPresent);
     // Submit to the graphics queue
     _queue->submit(*_drawCmdBuffers[currentBuffer],
         {*_semaphores.presentComplete},
@@ -1569,7 +1630,7 @@ void VulkanExample::keyPressEvent(KeyEvent& e) {
     if(e.key() == KeyEvent::Key::Esc) {
         exit();
     } else {
-        //Debug() << "keyPressEvent:" << char(e.key());
+
     }
 }
 
@@ -1582,7 +1643,16 @@ void VulkanExample::mouseReleaseEvent(MouseEvent& event) {
 }
 
 void VulkanExample::mouseMoveEvent(MouseMoveEvent& event) {
-    //Debug() << "mouseMoveEvent:" << event.position();
+    _rot += 0.5f;
+    _uniforms.modelMatrix = Matrix4::rotationY(Deg(_rot));
+
+    // Map uniform buffer and update it
+    void *data;
+    VkResult err = vkMapMemory(_device->vkDevice(), _uniformBufferMemory, 0, sizeof(_uniforms), 0, &data);
+    MAGNUM_VK_ASSERT_ERROR(err);
+    memcpy(data, &_uniforms, sizeof(_uniforms));
+    vkUnmapMemory(_device->vkDevice(), _uniformBufferMemory);
+    MAGNUM_VK_ASSERT_ERROR(err);
 }
 
 void VulkanExample::mouseScrollEvent(MouseScrollEvent& event) {
