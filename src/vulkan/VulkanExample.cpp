@@ -26,759 +26,28 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <Magnum/Math/Vector3.h>
 #include <Magnum/Platform/GlfwApplication.h>
+
+#include <Magnum/Vk/CommandBuffer.h>
+#include <Magnum/Vk/CommandPool.h>
 #include <Magnum/Vk/Context.h>
+#include <Magnum/Vk/Device.h>
+#include <Magnum/Vk/PhysicalDevice.h>
+#include <Magnum/Vk/Queue.h>
+#include <Magnum/Vk/Semaphore.h>
+#include <Magnum/Vk/Swapchain.h>
+
 #include <Magnum/Math/Matrix4.h>
 #include <Corrade/Containers/Array.h>
 #include <Corrade/Utility/Directory.h>
 
 #include <cstring> // for memcpy
 
-// TODO: Very unsafe enum.
-#define MAGNUM_VK_ASSERT_ERROR(err) \
-    if(err != VK_SUCCESS) {         \
-        Error()<< "(File:" << __FILE__ << ", Line:" << __LINE__ << ") Vulkan error:" << Vk::Result(err);   \
-    }
 
 namespace Magnum { namespace Examples {
 
-class PhysicalDevice {
-    friend class Device;
+using namespace Vk;
 
-    public:
-        PhysicalDevice() {}
-
-        VkBool32 getSupportedDepthFormat(VkFormat *depthFormat)
-        {
-            // Since all depth formats may be optional, we need to find a suitable depth format to use
-            // Start with the highest precision packed format
-            std::vector<VkFormat> depthFormats = {
-                VK_FORMAT_D32_SFLOAT_S8_UINT,
-                VK_FORMAT_D32_SFLOAT,
-                VK_FORMAT_D24_UNORM_S8_UINT,
-                VK_FORMAT_D16_UNORM_S8_UINT,
-                VK_FORMAT_D16_UNORM
-            };
-
-            for (auto& format : depthFormats)
-            {
-                VkFormatProperties formatProps;
-                vkGetPhysicalDeviceFormatProperties(_physicalDevice, format, &formatProps);
-                // Format must support depth stencil attachment for optimal tiling
-                if (formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
-                {
-                    *depthFormat = format;
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        PhysicalDevice(const VkPhysicalDevice& device) {
-            _physicalDevice = device;
-
-            // Gather physical device memory properties
-            vkGetPhysicalDeviceMemoryProperties(_physicalDevice, &_deviceMemoryProperties);
-        }
-
-        PhysicalDevice(const PhysicalDevice&) = delete;
-
-        UnsignedInt getGraphicsQueueIndex() {
-            // Find a queue that supports graphics operations
-            uint32_t graphicsQueueIndex = 0;
-            uint32_t queueCount;
-            vkGetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &queueCount, nullptr);
-            assert(queueCount >= 1);
-
-            std::vector<VkQueueFamilyProperties> queueProps;
-            queueProps.resize(queueCount);
-            vkGetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &queueCount, queueProps.data());
-
-            for (graphicsQueueIndex = 0; graphicsQueueIndex < queueCount; graphicsQueueIndex++)
-            {
-                if (queueProps[graphicsQueueIndex].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-                    break;
-            }
-            assert(graphicsQueueIndex < queueCount);
-
-            return graphicsQueueIndex;
-        }
-
-        VkPhysicalDeviceProperties getProperties() {
-            VkPhysicalDeviceProperties deviceProperties;
-            vkGetPhysicalDeviceProperties(_physicalDevice, &deviceProperties);
-
-            return deviceProperties;
-        }
-
-        VkPhysicalDevice& vkPhysicalDevice() {
-            return _physicalDevice;
-        }
-
-        VkBool32 getMemoryType(uint32_t typeBits, VkFlags properties, uint32_t* typeIndex);
-
-    private:
-        VkPhysicalDevice _physicalDevice;
-        VkPhysicalDeviceMemoryProperties _deviceMemoryProperties;
-};
-
-class Queue;
-
-class Device;
-
-class Semaphore {
-    public:
-
-        Semaphore(const VkSemaphore& sem, Device& device):
-            _semaphore{sem},
-            _device{device} {
-        }
-
-        Semaphore(const Semaphore& sem) = delete;
-
-        Semaphore(Semaphore&& sem): _semaphore{sem.vkSemaphore()}, _device{sem._device} {
-            sem._semaphore = VK_NULL_HANDLE;
-        }
-        ~Semaphore();
-
-        VkSemaphore operator=(Semaphore& sem) {
-            return sem._semaphore;
-        }
-
-        Semaphore& operator=(const Semaphore& sem) {
-            _semaphore = sem._semaphore;
-            return *this;
-        }
-
-        VkSemaphore& vkSemaphore() {
-            return _semaphore;
-        }
-
-    private:
-        VkSemaphore _semaphore = VK_NULL_HANDLE;
-        Device& _device;
-};
-
-class CommandPool;
-
-class CommandBuffer {
-    public:
-
-        enum class Level: Int {
-            Primary = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            Secondary = VK_COMMAND_BUFFER_LEVEL_SECONDARY
-        };
-
-        CommandBuffer(VkCommandBuffer buffer, Device& device, CommandPool& cmdPool):
-            _cmdBuffer{buffer},
-            _device{device},
-            _commandPool{cmdPool} {
-        }
-
-        CommandBuffer(const CommandBuffer&) = delete;
-
-        ~CommandBuffer();
-
-        CommandBuffer& begin() {
-            VkCommandBufferBeginInfo cmdBufInfo = {};
-            cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            vkBeginCommandBuffer(_cmdBuffer, &cmdBufInfo);
-
-            return *this;
-        }
-
-        CommandBuffer& end() {
-            VkResult err = vkEndCommandBuffer(_cmdBuffer);
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            return *this;
-        }
-
-        VkCommandBuffer vkCommandBuffer() {
-            return _cmdBuffer;
-        }
-
-    private:
-        VkCommandBuffer _cmdBuffer;
-        Device& _device;
-        CommandPool& _commandPool;
-};
-
-class CommandPool {
-    public:
-
-        CommandPool() = default;
-
-        CommandPool(VkCommandPool pool, Device& device):
-            _cmdPool{pool},
-            _device{device} {
-        }
-
-        CommandPool(const CommandPool&) = delete;
-
-        ~CommandPool();
-
-        VkCommandPool vkCommandPool() {
-            return _cmdPool;
-        }
-
-        std::unique_ptr<CommandBuffer> allocateCommandBuffer(CommandBuffer::Level level);
-
-    private:
-        VkCommandPool _cmdPool;
-        Device& _device;
-};
-
-class Queue {
-    public:
-
-        Queue(const VkQueue& q): _queue(q) {
-        }
-
-        Queue(const Queue&) = delete;
-
-        ~Queue() {
-        }
-
-        Queue& submit(CommandBuffer& cmdBuffer) {
-            VkCommandBuffer cb = cmdBuffer.vkCommandBuffer();
-
-            VkSubmitInfo submitInfo = {};
-            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submitInfo.commandBufferCount = 1;
-            submitInfo.pCommandBuffers = &cb;
-
-            VkResult err = vkQueueSubmit(_queue, 1, &submitInfo, VK_NULL_HANDLE);
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            return *this;
-        }
-
-        Queue& submit(CommandBuffer& cmdBuffer,
-                      std::vector<std::reference_wrapper<Semaphore>> waitSemaphores,
-                      std::vector<std::reference_wrapper<Semaphore>> signalSemaphores) {
-            VkCommandBuffer cb = cmdBuffer.vkCommandBuffer();
-
-            VkPipelineStageFlags pipelineDstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT; // TODO: Expose
-            VkSubmitInfo submitInfo = {};
-            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submitInfo.pWaitDstStageMask = &pipelineDstStage;
-            submitInfo.commandBufferCount = 1;
-            submitInfo.pCommandBuffers = &cb;
-
-            std::vector<VkSemaphore> waitSems;
-            waitSems.reserve(waitSemaphores.size());
-            for(Semaphore& sem : waitSemaphores) {
-                waitSems.push_back(sem.vkSemaphore());
-            }
-
-            std::vector<VkSemaphore> sigSems;
-            sigSems.reserve(waitSemaphores.size());
-            for(Semaphore& sem : signalSemaphores) {
-                sigSems.push_back(sem.vkSemaphore());
-            }
-            submitInfo.waitSemaphoreCount = waitSemaphores.size();
-            submitInfo.pWaitSemaphores = waitSems.data();
-            submitInfo.signalSemaphoreCount = signalSemaphores.size();
-            submitInfo.pSignalSemaphores = sigSems.data();
-
-            VkResult err = vkQueueSubmit(_queue, 1, &submitInfo, VK_NULL_HANDLE);
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            return *this;
-        }
-
-        Queue& waitIdle() {
-            VkResult err = vkQueueWaitIdle(_queue);
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            return *this;
-        }
-
-        VkQueue vkQueue() {
-            return _queue;
-        }
-
-    private:
-        VkQueue _queue;
-};
-
-int validationLayerCount = 1;
-const char *validationLayerNames[] =
-{
-    // This is a meta layer that enables all of the standard
-    // validation layers in the correct order :
-    // threading, parameter_validation, device_limits, object_tracker, image, core_validation, swapchain, and unique_objects
-    "VK_LAYER_LUNARG_standard_validation"
-};
-
-class Device {
-    public:
-
-        Device(const PhysicalDevice& physicalDevice, VkDeviceQueueCreateInfo requestedQueues, bool enableValidation) {
-            constexpr const char* enabledExtensions[]{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-
-            VkDeviceCreateInfo deviceCreateInfo = {};
-            deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-            deviceCreateInfo.pNext = nullptr;
-            deviceCreateInfo.queueCreateInfoCount = 1;
-            deviceCreateInfo.pQueueCreateInfos = &requestedQueues;
-            deviceCreateInfo.pEnabledFeatures = nullptr;
-
-            deviceCreateInfo.enabledExtensionCount = 1;
-            deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions;
-            if (enableValidation) {
-                deviceCreateInfo.enabledLayerCount = validationLayerCount;
-                deviceCreateInfo.ppEnabledLayerNames = validationLayerNames;
-            }
-
-            vkCreateDevice(physicalDevice._physicalDevice, &deviceCreateInfo, nullptr, &_device);
-        }
-
-        ~Device() {
-            vkDestroyDevice(_device, nullptr);
-        }
-
-        Device(const Device&) = delete;
-
-        std::unique_ptr<Queue> getDeviceQueue(UnsignedInt index) {
-            // Get the graphics queue
-            VkQueue queue;
-            vkGetDeviceQueue(_device, index, 0, &queue);
-
-            return std::unique_ptr<Queue>{new Queue(queue)};
-        }
-
-        std::unique_ptr<Semaphore> createSemaphore() {
-            VkSemaphore semaphore;
-            // Create synchronization objects
-            constexpr VkSemaphoreCreateInfo semaphoreCreateInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0};
-
-            // Create a semaphore used to synchronize image presentation
-            // Ensures that the image is displayed before we start submitting new commands to the queu
-            VkResult err = vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &semaphore);
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            return std::unique_ptr<Semaphore>{new Semaphore{semaphore, *this}};
-        }
-
-        std::unique_ptr<CommandPool> createCommandPool(const UnsignedInt queueFamilyIndex);
-
-        VkDevice vkDevice() {
-            return _device;
-        }
-
-        Device& waitIdle() {
-            VkResult err = vkDeviceWaitIdle(_device);
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            return *this;
-        }
-
-    private:
-        VkDevice _device;
-};
-
-Semaphore::~Semaphore(){
-    vkDestroySemaphore(_device.vkDevice(), _semaphore, nullptr);
-}
-
-CommandBuffer::~CommandBuffer() {
-    vkFreeCommandBuffers(_device.vkDevice(), _commandPool.vkCommandPool(), 1, &_cmdBuffer);
-}
-
-std::unique_ptr<CommandPool> Device::createCommandPool(const UnsignedInt queueFamilyIndex){
-   VkCommandPool cmdPool;
-   VkCommandPoolCreateInfo cmdPoolInfo = {};
-   cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-   cmdPoolInfo.queueFamilyIndex = queueFamilyIndex;
-   cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-   vkCreateCommandPool(_device, &cmdPoolInfo, nullptr, &cmdPool);
-
-   return std::unique_ptr<CommandPool>{new CommandPool(cmdPool, *this)};
-}
-
-std::unique_ptr<CommandBuffer> CommandPool::allocateCommandBuffer(CommandBuffer::Level level) {
-    VkCommandBuffer cmdBuffer;
-    VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
-    commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    commandBufferAllocateInfo.commandPool = _cmdPool;
-    commandBufferAllocateInfo.level = VkCommandBufferLevel(level);
-    commandBufferAllocateInfo.commandBufferCount = 1;
-
-    vkAllocateCommandBuffers(_device.vkDevice(), &commandBufferAllocateInfo, &cmdBuffer);
-
-    return std::unique_ptr<CommandBuffer>{new CommandBuffer{cmdBuffer, _device, *this}};
-}
-
-CommandPool::~CommandPool() {
-    vkDestroyCommandPool(_device.vkDevice(), _cmdPool, nullptr);
-}
-
-#define GET_INSTANCE_PROC_ADDR(inst, entrypoint) vk##entrypoint = PFN_vk##entrypoint(vkGetInstanceProcAddr(inst, "vk"#entrypoint)); if(vk##entrypoint == nullptr) { Error() << "Failed to get function pointer.";} do{}while(false)
-#define GET_DEVICE_PROC_ADDR(dev, entrypoint) vk##entrypoint = PFN_vk##entrypoint(vkGetDeviceProcAddr(dev, "vk"#entrypoint)); if(vk##entrypoint == nullptr) { Error() << "Failed to get function pointer.";} do{}while(false)
-
-typedef struct {
-    VkImage image;
-    VkImageView view;
-} SwapChainBuffer;
-
-class SwapChain {
-    private:
-        PFN_vkGetPhysicalDeviceSurfaceSupportKHR vkGetPhysicalDeviceSurfaceSupportKHR;
-        PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
-        PFN_vkGetPhysicalDeviceSurfaceFormatsKHR vkGetPhysicalDeviceSurfaceFormatsKHR;
-        PFN_vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceSurfacePresentModesKHR;
-
-        PFN_vkCreateSwapchainKHR vkCreateSwapchainKHR;
-        PFN_vkDestroySwapchainKHR vkDestroySwapchainKHR;
-        PFN_vkGetSwapchainImagesKHR vkGetSwapchainImagesKHR;
-        PFN_vkAcquireNextImageKHR vkAcquireNextImageKHR;
-        PFN_vkQueuePresentKHR vkQueuePresentKHR;
-
-        Device* _device;
-        VkSurfaceKHR _surface;
-
-    public:
-        VkFormat colorFormat = VK_FORMAT_B8G8R8A8_UNORM;
-        VkColorSpaceKHR colorSpace;
-
-        VkSwapchainKHR swapChain = VK_NULL_HANDLE;
-
-        uint32_t imageCount;
-        std::vector<VkImage> images;
-        std::vector<SwapChainBuffer> buffers;
-
-        // Index of the deteced graphics and presenting device queue
-        uint32_t queueNodeIndex = UINT32_MAX;
-
-        // Connect to the instance und device and get all required function pointers
-        void connect(Device& device) {
-            _device = &device;
-
-            GET_INSTANCE_PROC_ADDR(Vk::Context::current().vkInstance(), GetPhysicalDeviceSurfaceSupportKHR);
-            GET_INSTANCE_PROC_ADDR(Vk::Context::current().vkInstance(), GetPhysicalDeviceSurfaceCapabilitiesKHR);
-            GET_INSTANCE_PROC_ADDR(Vk::Context::current().vkInstance(), GetPhysicalDeviceSurfaceFormatsKHR);
-            GET_INSTANCE_PROC_ADDR(Vk::Context::current().vkInstance(), GetPhysicalDeviceSurfacePresentModesKHR);
-
-            GET_DEVICE_PROC_ADDR(device.vkDevice(), CreateSwapchainKHR);
-            GET_DEVICE_PROC_ADDR(device.vkDevice(), DestroySwapchainKHR);
-            GET_DEVICE_PROC_ADDR(device.vkDevice(), GetSwapchainImagesKHR);
-            GET_DEVICE_PROC_ADDR(device.vkDevice(), AcquireNextImageKHR);
-            GET_DEVICE_PROC_ADDR(device.vkDevice(), QueuePresentKHR);
-        }
-
-        // Creates an os specific surface
-        // Tries to find a graphics and a present queue
-        void create(PhysicalDevice& physicalDevice, CommandBuffer& cb, VkSurfaceKHR surface) {
-            VkResult err;
-            _surface = surface;
-
-            // Get available queue family properties
-            uint32_t queueCount;
-            vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice.vkPhysicalDevice(),
-                                                     &queueCount, nullptr);
-            assert(queueCount >= 1);
-
-            std::vector<VkQueueFamilyProperties> queueProps(queueCount);
-            vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice.vkPhysicalDevice(),
-                                                     &queueCount, queueProps.data());
-
-            std::vector<VkBool32> supportsPresent(queueCount);
-            for (uint32_t i = 0; i < queueCount; i++) {
-                vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice.vkPhysicalDevice(),
-                                                     i, surface, &supportsPresent[i]);
-            }
-
-            // Search for a graphics and a present queue in the array of queue
-            // families, try to find one that supports both
-            uint32_t graphicsQueueNodeIndex = UINT32_MAX;
-            uint32_t presentQueueNodeIndex = UINT32_MAX;
-            for (uint32_t i = 0; i < queueCount; i++) {
-                if ((queueProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
-                    if (graphicsQueueNodeIndex == UINT32_MAX) {
-                        graphicsQueueNodeIndex = i;
-                    }
-
-                    if (supportsPresent[i] == VK_TRUE) {
-                        graphicsQueueNodeIndex = i;
-                        presentQueueNodeIndex = i;
-                        break;
-                    } else {
-                        Warning() << "Queue" << i << "does not support present.";
-                    }
-                }
-            }
-            if (presentQueueNodeIndex == UINT32_MAX) {
-                // If there's no queue that supports both present and graphics
-                // try to find a separate present queue
-                for (uint32_t i = 0; i < queueCount; ++i) {
-                    if (supportsPresent[i] == VK_TRUE) {
-                        presentQueueNodeIndex = i;
-                        break;
-                    }
-                }
-            }
-
-            // Exit if either a graphics or a presenting queue hasn't been found
-            if (graphicsQueueNodeIndex == UINT32_MAX || presentQueueNodeIndex == UINT32_MAX) {
-                return; // fatal
-            }
-
-            // todo : Add support for separate graphics and presenting queue
-            if (graphicsQueueNodeIndex != presentQueueNodeIndex) {
-                return; // fatal
-            }
-
-            queueNodeIndex = graphicsQueueNodeIndex;
-
-            // Get list of supported surface formats
-            uint32_t formatCount;
-            err = vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice.vkPhysicalDevice(),
-                                                       surface, &formatCount, nullptr);
-            MAGNUM_VK_ASSERT_ERROR(err);
-            assert(formatCount > 0);
-
-            std::vector<VkSurfaceFormatKHR> surfaceFormats(formatCount);
-            err = vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice.vkPhysicalDevice(),
-                                                       surface, &formatCount,
-                                                       surfaceFormats.data());
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            // If the surface format list only includes one entry with VK_FORMAT_UNDEFINED,
-            // there is no preferered format, so we assume VK_FORMAT_B8G8R8A8_UNORM
-            if ((formatCount == 1) && (surfaceFormats[0].format == VK_FORMAT_UNDEFINED)) {
-                colorFormat = VK_FORMAT_B8G8R8A8_UNORM;
-            } else {
-                // Always select the first available color format
-                // If you need a specific format (e.g. SRGB) you'd need to
-                // iterate over the list of available surface format and
-                // check for it's presence
-                colorFormat = surfaceFormats[0].format;
-            }
-            colorSpace = surfaceFormats[0].colorSpace;
-
-            VkSwapchainKHR oldSwapchain = swapChain;
-
-            // Get physical device surface properties and formats
-            VkSurfaceCapabilitiesKHR surfCaps;
-            err = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice.vkPhysicalDevice(),
-                                                            surface, &surfCaps);
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            // Get available present modes
-            uint32_t presentModeCount;
-            err = vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice.vkPhysicalDevice(),
-                                                            surface, &presentModeCount, nullptr);
-            MAGNUM_VK_ASSERT_ERROR(err);
-            assert(presentModeCount > 0);
-
-            std::vector<VkPresentModeKHR> presentModes(presentModeCount);
-
-            err = vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice.vkPhysicalDevice(),
-                                                            surface, &presentModeCount,
-                                                            presentModes.data());
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            VkExtent2D swapchainExtent = {};
-            // width and height are either both -1, or both not -1.
-            if (surfCaps.currentExtent.width == -1) {
-                // If the surface size is undefined, the size is set to
-                // the size of the images requested.
-                swapchainExtent.width = 800;
-                swapchainExtent.height = 600;
-            } else {
-                // If the surface size is defined, the swap chain size must match
-                swapchainExtent = surfCaps.currentExtent;
-            }
-
-            // Prefer mailbox mode if present, it's the lowest latency non-tearing present  mode
-            VkPresentModeKHR swapchainPresentMode = VK_PRESENT_MODE_FIFO_KHR;
-            for (size_t i = 0; i < presentModeCount; i++) {
-                if (presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-                    swapchainPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-                    break;
-                }
-                if ((swapchainPresentMode != VK_PRESENT_MODE_MAILBOX_KHR) && (presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)) {
-                    swapchainPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-                }
-            }
-
-            // Determine the number of images
-            uint32_t desiredNumberOfSwapchainImages = surfCaps.minImageCount + 1;
-            if ((surfCaps.maxImageCount > 0) && (desiredNumberOfSwapchainImages > surfCaps.maxImageCount)) {
-                desiredNumberOfSwapchainImages = surfCaps.maxImageCount;
-            }
-
-            VkSurfaceTransformFlagsKHR preTransform;
-            if (surfCaps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
-                preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-            } else {
-                preTransform = surfCaps.currentTransform;
-            }
-
-            VkSwapchainCreateInfoKHR swapchainCI = {};
-            swapchainCI.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-            swapchainCI.pNext = nullptr;
-            swapchainCI.flags = 0;
-            swapchainCI.surface = surface;
-            swapchainCI.imageFormat = colorFormat;
-            swapchainCI.imageColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;//colorSpace;
-            swapchainCI.imageExtent = swapchainExtent;
-            swapchainCI.minImageCount = desiredNumberOfSwapchainImages;
-            swapchainCI.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-            swapchainCI.preTransform = VkSurfaceTransformFlagBitsKHR(preTransform);
-            swapchainCI.imageArrayLayers = 1;
-            swapchainCI.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            swapchainCI.queueFamilyIndexCount = 0;
-            swapchainCI.pQueueFamilyIndices = nullptr;
-            swapchainCI.presentMode = swapchainPresentMode;
-            swapchainCI.oldSwapchain = VK_NULL_HANDLE;
-            swapchainCI.clipped = VK_TRUE;
-            swapchainCI.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-
-            err = vkCreateSwapchainKHR(_device->vkDevice(), &swapchainCI, nullptr, &swapChain);
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            // If an existing sawp chain is re-created, destroy the old swap chain
-            // This also cleans up all the presentable images
-            if (oldSwapchain != VK_NULL_HANDLE) {
-                vkDestroySwapchainKHR(_device->vkDevice(), oldSwapchain, nullptr);
-            }
-
-            err = vkGetSwapchainImagesKHR(_device->vkDevice(), swapChain, &imageCount, nullptr);
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            // Get the swap chain images
-            images.resize(imageCount);
-            err = vkGetSwapchainImagesKHR(_device->vkDevice(), swapChain, &imageCount, images.data());
-            MAGNUM_VK_ASSERT_ERROR(err);
-
-            // Get the swap chain buffers containing the image and imageview
-            buffers.resize(imageCount);
-            for (uint32_t i = 0; i < imageCount; i++) {
-                VkImageViewCreateInfo colorAttachmentView = {};
-                colorAttachmentView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-                colorAttachmentView.pNext = nullptr;
-                colorAttachmentView.format = colorFormat;
-                colorAttachmentView.components = {
-                    VK_COMPONENT_SWIZZLE_R,
-                    VK_COMPONENT_SWIZZLE_G,
-                    VK_COMPONENT_SWIZZLE_B,
-                    VK_COMPONENT_SWIZZLE_A
-                };
-                colorAttachmentView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                colorAttachmentView.subresourceRange.baseMipLevel = 0;
-                colorAttachmentView.subresourceRange.levelCount = 1;
-                colorAttachmentView.subresourceRange.baseArrayLayer = 0;
-                colorAttachmentView.subresourceRange.layerCount = 1;
-                colorAttachmentView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-                colorAttachmentView.flags = 0;
-
-                buffers[i].image = images[i];
-
-                VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                VkImageLayout oldImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                VkImageLayout newImageLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-                // Create an image barrier object
-                VkImageMemoryBarrier imageMemoryBarrier = {};
-                imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                imageMemoryBarrier.pNext = nullptr;
-                // Some default values
-                imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                imageMemoryBarrier.oldLayout = oldImageLayout;
-                imageMemoryBarrier.newLayout = newImageLayout;
-                imageMemoryBarrier.image = buffers[i].image;
-
-                VkImageSubresourceRange subresourceRange = {};
-                subresourceRange.aspectMask = aspectMask;
-                subresourceRange.baseMipLevel = 0;
-                subresourceRange.levelCount = 1;
-                subresourceRange.layerCount = 1;
-                imageMemoryBarrier.subresourceRange = subresourceRange;
-
-                // Put barrier on top
-                VkPipelineStageFlags srcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-                VkPipelineStageFlags destStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-
-                // Put barrier inside setup command buffer
-                vkCmdPipelineBarrier(
-                    cb.vkCommandBuffer(),
-                    srcStageFlags,
-                    destStageFlags,
-                    0,
-                    0, nullptr,
-                    0, nullptr,
-                    1, &imageMemoryBarrier);
-
-                colorAttachmentView.image = buffers[i].image;
-
-                err = vkCreateImageView(_device->vkDevice(), &colorAttachmentView, nullptr, &buffers[i].view);
-                MAGNUM_VK_ASSERT_ERROR(err);
-            }
-        }
-
-        // Acquires the next image in the swap chain
-        VkResult acquireNextImage(Semaphore& presentCompleteSemaphore, uint32_t* currentBuffer) {
-            return vkAcquireNextImageKHR(_device->vkDevice(),
-                                         swapChain, UINT64_MAX, presentCompleteSemaphore.vkSemaphore(),
-                                         VkFence(nullptr), currentBuffer);
-        }
-
-        // Present the current image to the queue
-        VkResult queuePresent(VkQueue queue, uint32_t currentBuffer) {
-            VkPresentInfoKHR presentInfo = {};
-            presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-            presentInfo.pNext = nullptr;
-            presentInfo.swapchainCount = 1;
-            presentInfo.pSwapchains = &swapChain;
-            presentInfo.pImageIndices = &currentBuffer;
-            return vkQueuePresentKHR(queue, &presentInfo);
-        }
-
-        // Present the current image to the queue
-        VkResult queuePresent(Queue& queue, uint32_t currentBuffer, Semaphore& waitSemaphore) {
-            VkSemaphore sem = waitSemaphore.vkSemaphore();
-            VkPresentInfoKHR presentInfo = {};
-            presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-            presentInfo.pNext = nullptr;
-            presentInfo.swapchainCount = 1;
-            presentInfo.pSwapchains = &swapChain;
-            presentInfo.pImageIndices = &currentBuffer;
-            presentInfo.pWaitSemaphores = &sem;
-            presentInfo.waitSemaphoreCount = 1;
-            return vkQueuePresentKHR(queue.vkQueue(), &presentInfo);
-        }
-
-        // Free all Vulkan resources used by the swap chain
-        ~SwapChain() {
-            for (uint32_t i = 0; i < imageCount; i++) {
-                vkDestroyImageView(_device->vkDevice(), buffers[i].view, nullptr);
-            }
-            vkDestroySwapchainKHR(_device->vkDevice(), swapChain, nullptr);
-            vkDestroySurfaceKHR(Vk::Context::current().vkInstance(), _surface, nullptr);
-        }
-};
-
-VkBool32 PhysicalDevice::getMemoryType(uint32_t typeBits, VkFlags properties, uint32_t* typeIndex)
-{
-    for (uint32_t i = 0; i < 32; i++) {
-        if ((typeBits & 1) == 1) {
-            if ((_deviceMemoryProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-                *typeIndex = i;
-                return true;
-            }
-        }
-        typeBits >>= 1;
-    }
-    Warning() << "No memory type found!";
-    return false;
-}
-
-VkPipelineShaderStageCreateInfo loadShader(Device& device, std::string filename, VkShaderStageFlagBits stage)
-{
+VkPipelineShaderStageCreateInfo loadShader(Device& device, std::string filename, VkShaderStageFlagBits stage) {
     VkResult err;
     VkShaderModule shaderModule;
 
@@ -786,10 +55,6 @@ VkPipelineShaderStageCreateInfo loadShader(Device& device, std::string filename,
         Error() << "File " << filename << "does not exist!";
     }
     Corrade::Containers::Array<char> shaderCode = Corrade::Utility::Directory::read(filename);
-
-    VkPipelineShaderStageCreateInfo shaderStage = {};
-    shaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStage.stage = stage;
 
     VkShaderModuleCreateInfo moduleCreateInfo;
     moduleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -801,10 +66,11 @@ VkPipelineShaderStageCreateInfo loadShader(Device& device, std::string filename,
     err = vkCreateShaderModule(device.vkDevice(), &moduleCreateInfo, nullptr, &shaderModule);
     MAGNUM_VK_ASSERT_ERROR(err);
 
+    VkPipelineShaderStageCreateInfo shaderStage = {};
+    shaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStage.stage = stage;
     shaderStage.module = shaderModule;
     shaderStage.pName = "main";
-
-    // nobody ever says I need to keep shaderCode alive. So I wont...?
     return shaderStage;
 }
 
@@ -822,14 +88,17 @@ class VulkanExample: public Platform::Application {
         void mouseScrollEvent(MouseScrollEvent& event) override;
 
         Vk::Context _context;
-        PhysicalDevice _physicalDevice;
         std::unique_ptr<Device> _device;
-        VkSubmitInfo _submitInfo;
         VkPipelineStageFlags _submitPipelineStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 
-        struct {
-            std::unique_ptr<Semaphore> presentComplete;
-            std::unique_ptr<Semaphore> renderComplete;
+        struct MySemaphores {
+            Semaphore presentComplete;
+            Semaphore renderComplete;
+
+            MySemaphores():
+                presentComplete(NoCreate),
+                renderComplete(NoCreate)
+            {}
         } _semaphores;
 
         std::unique_ptr<Queue> _queue;
@@ -837,7 +106,7 @@ class VulkanExample: public Platform::Application {
         std::unique_ptr<CommandBuffer> _setupCmdBuffer;
 
         VkSurfaceKHR _surface;
-        SwapChain _swapChain;
+        std::unique_ptr<Swapchain> _swapchain;
 
         struct {
             std::unique_ptr<CommandBuffer> prePresent;
@@ -877,15 +146,16 @@ class VulkanExample: public Platform::Application {
         VkPipelineShaderStageCreateInfo _shaderStages[2];
 
         Float _rot;
+        UnsignedInt _currentBuffer;
 };
 
 VulkanExample::VulkanExample(const Arguments& arguments)
     : Platform::Application{arguments, Configuration{}.setTitle("Magnum Vulkan Triangle Example")},
       _context{{Vk::Context::Flag::EnableValidation}},
-      _rot{0.0f}
+      _swapchain{nullptr},
+      _rot{0.0f},
+      _currentBuffer{0}
 {
-    bool enableValidation = true;
-
     // Physical device
     uint32_t gpuCount = 0;
     // Get number of available physical devices
@@ -907,9 +177,9 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     // This example will always use the first physical device reported,
     // change the vector index if you have multiple Vulkan devices installed
     // and want to use another one
-    _physicalDevice = PhysicalDevice{physicalDevices[0]};
+    PhysicalDevice physicalDevice = PhysicalDevice{physicalDevices[0]};
 
-    UnsignedInt graphicsQueueIndex = _physicalDevice.getGraphicsQueueIndex();
+    UnsignedInt graphicsQueueIndex = physicalDevice.getQueueFamilyIndex(QueueFamily::Graphics);
 
     // Vulkan device
     float queuePriorities = 0.0f;
@@ -919,48 +189,24 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &queuePriorities;
 
-    _device.reset(new Device{_physicalDevice, queueCreateInfo, enableValidation});
+    _device.reset(new Device{physicalDevice, queueCreateInfo});
     MAGNUM_VK_ASSERT_ERROR(err);
 
     // Find a suitable depth format
-    VkFormat depthFormat;
-    VkBool32 validDepthFormat = _physicalDevice.getSupportedDepthFormat(&depthFormat);
-    assert(validDepthFormat);
+    VkFormat depthFormat = physicalDevice.getSupportedDepthFormat();
 
-    _queue = _device->getDeviceQueue(graphicsQueueIndex);
+    _queue.reset(new Queue{*_device, graphicsQueueIndex, 0});
 
-    // swapChain.connect(_context.vkInstance(), _physicalDevice, _device);
+    _semaphores.presentComplete = Semaphore{*_device};
+    _semaphores.renderComplete = Semaphore{*_device};
 
-    _semaphores.presentComplete = _device->createSemaphore();
-    _semaphores.renderComplete = _device->createSemaphore();
-
-    // Set up submit info structure
-    // Semaphores will stay the same during application lifetime
-    // Command buffer submission info is set by each example
-    _submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    _submitInfo.pNext = nullptr;
-    _submitInfo.pWaitDstStageMask = &_submitPipelineStages;
-    _submitInfo.waitSemaphoreCount = 1;
-    _submitInfo.pWaitSemaphores = &_semaphores.presentComplete->vkSemaphore();
-    _submitInfo.signalSemaphoreCount = 1;
-    _submitInfo.pSignalSemaphores = &_semaphores.renderComplete->vkSemaphore();
-
-    _cmdPool = _device->createCommandPool(0);
-
+    _cmdPool.reset(new CommandPool{*_device, QueueFamily::Graphics});
 
     _setupCmdBuffer = _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
     _setupCmdBuffer->begin();
 
-    // Create surface depending on OS
-    VkWin32SurfaceCreateInfoKHR surfaceCreateInfo = {};
-    surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-    surfaceCreateInfo.hinstance = (HINSTANCE)GetModuleHandleA(nullptr);
-    surfaceCreateInfo.hwnd = getPlatformWindow();
-    err = vkCreateWin32SurfaceKHR(_context.vkInstance(), &surfaceCreateInfo, nullptr, &_surface);
-    MAGNUM_VK_ASSERT_ERROR(err);
-
-    _swapChain.connect(*_device.get());
-    _swapChain.create(_physicalDevice, *_setupCmdBuffer, _surface);
+    _surface = createVkSurface();
+    _swapchain.reset(new Swapchain{*_device, *_setupCmdBuffer, _surface});
 
     _cmdBuffers.prePresent =
             _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
@@ -977,8 +223,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     image.arrayLayers = 1;
     image.samples = VK_SAMPLE_COUNT_1_BIT;
     image.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-            | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     image.flags = 0;
 
     VkMemoryAllocateInfo mem_alloc = {};
@@ -994,8 +239,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     vkGetImageMemoryRequirements(_device->vkDevice(), _depthStencil.image, &memReqs);
     mem_alloc.allocationSize = memReqs.size;
     Debug() << "Memory Requirements:" << memReqs.size;
-    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                  &mem_alloc.memoryTypeIndex);
+    mem_alloc.memoryTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     Debug() << "Memory type:" << mem_alloc.memoryTypeIndex;
     err = vkAllocateMemory(_device->vkDevice(), &mem_alloc, nullptr, &_depthStencil.mem);
     MAGNUM_VK_ASSERT_ERROR(err);
@@ -1049,9 +293,10 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     // setup render pass
 
+    VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
     VkAttachmentDescription attachments[2];
     attachments[0].format = VK_FORMAT_B8G8R8A8_UNORM;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].samples = sampleCount;
     attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -1060,7 +305,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     attachments[1].format = depthFormat;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].samples = sampleCount;
     attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -1105,23 +350,22 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     // Depth/Stencil attachment is the same for all frame buffers
     attachmentImages[1] = _depthStencil.view;
 
-    VkFramebufferCreateInfo frameBufferCreateInfo = {};
-    frameBufferCreateInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    frameBufferCreateInfo.pNext = nullptr;
-    frameBufferCreateInfo.renderPass = _renderPass;
-    frameBufferCreateInfo.attachmentCount = 2;
-    frameBufferCreateInfo.pAttachments = attachmentImages;
-    frameBufferCreateInfo.width = 800;
-    frameBufferCreateInfo.height = 600;
-    frameBufferCreateInfo.layers = 1;
+    VkFramebufferCreateInfo fbCreateInfo = {};
+    fbCreateInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbCreateInfo.pNext = nullptr;
+    fbCreateInfo.renderPass = _renderPass;
+    fbCreateInfo.attachmentCount = 2;
+    fbCreateInfo.pAttachments = attachmentImages;
+    fbCreateInfo.width = 800;
+    fbCreateInfo.height = 600;
+    fbCreateInfo.layers = 1;
 
     // Create frame buffers for every swap chain image
-    _frameBuffers.resize(_swapChain.imageCount);
-    for (uint32_t i = 0; i < _frameBuffers.size(); i++)
-    {
-        attachmentImages[0] = _swapChain.buffers[i].view;
-        VkResult err = vkCreateFramebuffer(_device->vkDevice(), &frameBufferCreateInfo, nullptr,
-                                           &_frameBuffers[i]);
+    _frameBuffers.resize(_swapchain->imageCount());
+    UnsignedInt i = 0;
+    for (auto& fb : _frameBuffers) {
+        attachmentImages[0] = _swapchain->imageView(i++);
+        VkResult err = vkCreateFramebuffer(_device->vkDevice(), &fbCreateInfo, nullptr, &fb);
         MAGNUM_VK_ASSERT_ERROR(err);
     }
 
@@ -1161,8 +405,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     memAlloc.pNext = nullptr;
     memAlloc.allocationSize = memReqs.size;
 
-    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                                  &memAlloc.memoryTypeIndex);
+    memAlloc.memoryTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
     err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &vMemory);
     MAGNUM_VK_ASSERT_ERROR(err);
 
@@ -1183,8 +426,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     vkGetBufferMemoryRequirements(_device->vkDevice(), _vertexBuffer, &memReqs);
     Debug() << "Memory requirements:" << memReqs.size;
     memAlloc.allocationSize = memReqs.size;
-    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                  &memAlloc.memoryTypeIndex);
+    memAlloc.memoryTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &_vertexBufferMemory);
     MAGNUM_VK_ASSERT_ERROR(err);
@@ -1201,7 +443,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     vkGetBufferMemoryRequirements(_device->vkDevice(), iBuffer, &memReqs);
 
     memAlloc.allocationSize = memReqs.size;
-    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &memAlloc.memoryTypeIndex);
+    memAlloc.memoryTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
     err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &iMemory);
     MAGNUM_VK_ASSERT_ERROR(err);
@@ -1219,7 +461,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     vkGetBufferMemoryRequirements(_device->vkDevice(), _indexBuffer, &memReqs);
     memAlloc.allocationSize = memReqs.size;
-    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &memAlloc.memoryTypeIndex);
+    memAlloc.memoryTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &_indexBufferMemory);
     MAGNUM_VK_ASSERT_ERROR(err);
@@ -1283,7 +525,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     vkGetBufferMemoryRequirements(_device->vkDevice(), _uniformBuffer, &memReqs);
     memAlloc.allocationSize = memReqs.size;
-    _physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &memAlloc.memoryTypeIndex);
+    memAlloc.memoryTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
     err = vkAllocateMemory(_device->vkDevice(), &memAlloc, nullptr, &_uniformBufferMemory);
     MAGNUM_VK_ASSERT_ERROR(err);
@@ -1375,10 +617,11 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
 
-    VkPipelineDynamicStateCreateInfo dynamicState = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0};
     VkDynamicState dynamicStateEnables[2]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    dynamicState.pDynamicStates = dynamicStateEnables;
-    dynamicState.dynamicStateCount = 2;
+    VkPipelineDynamicStateCreateInfo dynamicState = {
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0,
+        2, dynamicStateEnables
+    };
 
     VkPipelineDepthStencilStateCreateInfo depthStencilState = {};
     depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -1394,12 +637,15 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     depthStencilState.front = depthStencilState.back;
 
     // multi sample state
-    VkPipelineMultisampleStateCreateInfo multisampleState = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0};
-    multisampleState.pSampleMask = nullptr;
-    multisampleState.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    //multisampleState.sampleShadingEnable = VK_FALSE; // this is unnecessary, though.
-    //multisampleState.alphaToCoverageEnable = VK_FALSE;
-    //multisampleState.alphaToOneEnable = VK_FALSE;
+    VkPipelineMultisampleStateCreateInfo multisampleState = {
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0,
+        sampleCount,
+        VK_FALSE,
+        0.0f,
+        nullptr,
+        VK_FALSE,
+        VK_FALSE
+    };
 
     _shaderStages[0] = loadShader(*_device, "./shaders/triangle.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
     _shaderStages[1] = loadShader(*_device, "./shaders/triangle.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -1480,7 +726,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     renderPassBeginInfo.renderArea = VkRect2D{{0, 0}, {800, 600}};
     renderPassBeginInfo.renderPass = _renderPass;
 
-    _drawCmdBuffers.resize(_swapChain.imageCount);
+    _drawCmdBuffers.resize(_swapchain->imageCount());
     for(UnsignedInt i = 0; i < _drawCmdBuffers.size(); ++i) {
         _drawCmdBuffers[i] = _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
         CommandBuffer& cmdBuffer = *(_drawCmdBuffers[i]);
@@ -1523,7 +769,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
         prePresentBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         prePresentBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         prePresentBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        prePresentBarrier.image = _swapChain.buffers[i].image;
+        prePresentBarrier.image = _swapchain->image(i);
 
         vkCmdPipelineBarrier(cmdBuffer.vkCommandBuffer(),
                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
@@ -1567,15 +813,8 @@ VulkanExample::~VulkanExample() {
 }
 
 void VulkanExample::drawEvent() {
-    UnsignedInt currentBuffer = 0;
-
     _device->waitIdle();
-
-    VkResult err;
-    // Get next image in the swap chain (back/front buffer)
-    err = _swapChain.acquireNextImage(*_semaphores.presentComplete,
-                                      &currentBuffer);
-    MAGNUM_VK_ASSERT_ERROR(err);
+    _swapchain->acquireNextImage(_semaphores.presentComplete);
 
     // Add a post present image memory barrier
     // This will transform the frame buffer color attachment back
@@ -1591,7 +830,7 @@ void VulkanExample::drawEvent() {
     postPresentBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     postPresentBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     postPresentBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    postPresentBarrier.image = _swapChain.buffers[currentBuffer].image;
+    postPresentBarrier.image = _swapchain->image();
 
     // Use dedicated command buffer from example base class for submitting the post present barrier
     _cmdBuffers.postPresent->begin();
@@ -1610,19 +849,15 @@ void VulkanExample::drawEvent() {
 
     _queue->submit(*_cmdBuffers.postPresent);
     // Submit to the graphics queue
-    _queue->submit(*_drawCmdBuffers[currentBuffer],
-        {*_semaphores.presentComplete},
-        {*_semaphores.renderComplete});
+    _queue->submit(*_drawCmdBuffers[_swapchain->currentIndex()],
+        {_semaphores.presentComplete},
+        {_semaphores.renderComplete});
 
     // Present the current buffer to the swap chain
     // We pass the signal semaphore from the submit info
     // to ensure that the image is not rendered until
     // all commands have been submitted
-    err = _swapChain.queuePresent(*_queue,
-                                  currentBuffer,
-                                  *_semaphores.renderComplete);
-    MAGNUM_VK_ASSERT_ERROR(err);
-
+    _swapchain->queuePresent(*_queue, _swapchain->currentIndex(), _semaphores.renderComplete);
     _device->waitIdle();
 }
 
@@ -1634,15 +869,13 @@ void VulkanExample::keyPressEvent(KeyEvent& e) {
     }
 }
 
-void VulkanExample::mousePressEvent(MouseEvent& event) {
-    //Debug() << "mousePressEvent:" << int(event.button());
+void VulkanExample::mousePressEvent(MouseEvent&) {
 }
 
-void VulkanExample::mouseReleaseEvent(MouseEvent& event) {
-    //Debug() << "mouseReleaseEvent:" << int(event.button());
+void VulkanExample::mouseReleaseEvent(MouseEvent&) {
 }
 
-void VulkanExample::mouseMoveEvent(MouseMoveEvent& event) {
+void VulkanExample::mouseMoveEvent(MouseMoveEvent&) {
     _rot += 0.5f;
     _uniforms.modelMatrix = Matrix4::rotationY(Deg(_rot));
 
@@ -1655,8 +888,7 @@ void VulkanExample::mouseMoveEvent(MouseMoveEvent& event) {
     MAGNUM_VK_ASSERT_ERROR(err);
 }
 
-void VulkanExample::mouseScrollEvent(MouseScrollEvent& event) {
-    //Debug() << "mouseScrollEvent:" << event.offset();
+void VulkanExample::mouseScrollEvent(MouseScrollEvent&) {
 }
 
 }}
