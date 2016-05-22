@@ -27,6 +27,7 @@
 #include <Magnum/Math/Vector3.h>
 #include <Magnum/Platform/GlfwApplication.h>
 
+#include <Magnum/Vk/Command.h>
 #include <Magnum/Vk/CommandBuffer.h>
 #include <Magnum/Vk/CommandPool.h>
 #include <Magnum/Vk/Context.h>
@@ -34,6 +35,7 @@
 #include <Magnum/Vk/PhysicalDevice.h>
 #include <Magnum/Vk/Queue.h>
 #include <Magnum/Vk/Semaphore.h>
+#include <Magnum/Vk/Shader.h>
 #include <Magnum/Vk/Swapchain.h>
 
 #include <Magnum/Math/Matrix4.h>
@@ -48,7 +50,6 @@ namespace Magnum { namespace Examples {
 using namespace Vk;
 
 VkPipelineShaderStageCreateInfo loadShader(Device& device, std::string filename, VkShaderStageFlagBits stage) {
-    VkResult err;
     VkShaderModule shaderModule;
 
     if(!Corrade::Utility::Directory::fileExists(filename)) {
@@ -56,20 +57,12 @@ VkPipelineShaderStageCreateInfo loadShader(Device& device, std::string filename,
     }
     Corrade::Containers::Array<char> shaderCode = Corrade::Utility::Directory::read(filename);
 
-    VkShaderModuleCreateInfo moduleCreateInfo;
-    moduleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    moduleCreateInfo.pNext = nullptr;
-    moduleCreateInfo.codeSize = shaderCode.size();
-    moduleCreateInfo.pCode = reinterpret_cast<uint32_t*>(shaderCode.data());
-    moduleCreateInfo.flags = 0;
-
-    err = vkCreateShaderModule(device.vkDevice(), &moduleCreateInfo, nullptr, &shaderModule);
-    MAGNUM_VK_ASSERT_ERROR(err);
+    Shader shader{device, shaderCode};
 
     VkPipelineShaderStageCreateInfo shaderStage = {};
     shaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     shaderStage.stage = stage;
-    shaderStage.module = shaderModule;
+    shaderStage.module = shader.vkShaderModule();
     shaderStage.pName = "main";
     return shaderStage;
 }
@@ -718,30 +711,17 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     clearValues[0].color = defaultClearColor;
     clearValues[1].depthStencil = {1.0f, 0};
 
-    VkRenderPassBeginInfo renderPassBeginInfo = {};
-    renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassBeginInfo.pNext = nullptr;
-    renderPassBeginInfo.clearValueCount = 2;
-    renderPassBeginInfo.pClearValues = clearValues;
-    renderPassBeginInfo.renderArea = VkRect2D{{0, 0}, {800, 600}};
-    renderPassBeginInfo.renderPass = _renderPass;
-
     _drawCmdBuffers.resize(_swapchain->imageCount());
     for(UnsignedInt i = 0; i < _drawCmdBuffers.size(); ++i) {
         _drawCmdBuffers[i] = _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
         CommandBuffer& cmdBuffer = *(_drawCmdBuffers[i]);
 
-        renderPassBeginInfo.framebuffer = _frameBuffers[i];
+        cmdBuffer.begin()
+                 .beginRenderPass(CommandBuffer::SubpassContents::Inline, _renderPass, _frameBuffers[i],
+                                  Range2Di{{}, {800, 600}}, {clearValues[0], clearValues[1]});
 
-        cmdBuffer.begin();
-        vkCmdBeginRenderPass(cmdBuffer.vkCommandBuffer(), &renderPassBeginInfo,
-                             VK_SUBPASS_CONTENTS_INLINE);
-
-        VkViewport viewport = {0, 0, 800, 600, 0.0f, 1.0f};
-        vkCmdSetViewport(cmdBuffer.vkCommandBuffer(), 0, 1, &viewport);
-
-        VkRect2D scissor = {{0, 0}, {800, 600}};
-        vkCmdSetScissor(cmdBuffer.vkCommandBuffer(), 0, 1, &scissor);
+        cmdBuffer << Cmd::setViewport(0, {VkViewport{0, 0, 800, 600, 0.0f, 1.0f}})
+                  << Cmd::setScissor(0, {Range2Di{{}, {800, 600}}});
 
         vkCmdBindDescriptorSets(cmdBuffer.vkCommandBuffer(),
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -757,7 +737,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
         vkCmdDrawIndexed(cmdBuffer.vkCommandBuffer(), 3, 1, 0, 0, 1);
 
-        vkCmdEndRenderPass(cmdBuffer.vkCommandBuffer());
+        cmdBuffer.endRenderPass();
 
         VkImageMemoryBarrier prePresentBarrier = {};
         prePresentBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -848,15 +828,10 @@ void VulkanExample::drawEvent() {
     _cmdBuffers.postPresent->end();
 
     _queue->submit(*_cmdBuffers.postPresent);
-    // Submit to the graphics queue
-    _queue->submit(*_drawCmdBuffers[_swapchain->currentIndex()],
-        {_semaphores.presentComplete},
-        {_semaphores.renderComplete});
+           .submit(*_drawCmdBuffers[_swapchain->currentIndex()],
+                    {_semaphores.presentComplete},
+                    {_semaphores.renderComplete});
 
-    // Present the current buffer to the swap chain
-    // We pass the signal semaphore from the submit info
-    // to ensure that the image is not rendered until
-    // all commands have been submitted
     _swapchain->queuePresent(*_queue, _swapchain->currentIndex(), _semaphores.renderComplete);
     _device->waitIdle();
 }
