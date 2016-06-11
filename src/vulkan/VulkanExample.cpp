@@ -33,6 +33,7 @@
 #include <Magnum/Vk/Command.h>
 #include <Magnum/Vk/CommandPool.h>
 #include <Magnum/Vk/Context.h>
+#include <Magnum/Vk/DescriptorPool.h>
 #include <Magnum/Vk/Device.h>
 #include <Magnum/Vk/DeviceMemory.h>
 #include <Magnum/Vk/Framebuffer.h>
@@ -130,10 +131,9 @@ class VulkanExample: public Platform::Application {
         std::unique_ptr<DeviceMemory> _uniformBufferMemory;
         VkDescriptorBufferInfo _uniformDescriptor;
         std::unique_ptr<Pipeline> _pipeline;
-        VkDescriptorPool _deadpool;
-        VkDescriptorSet _descriptorSet;
-        VkDescriptorSetLayout _descriptorSetLayout;
-        VkPipelineShaderStageCreateInfo _shaderStages[2];
+        std::unique_ptr<DescriptorPool> _deadpool;
+        std::unique_ptr<DescriptorSet> _descriptorSet;
+        std::unique_ptr<DescriptorSetLayout> _descriptorSetLayout;
 
         Float _rot;
         UnsignedInt _currentBuffer;
@@ -333,20 +333,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _uniformBufferMemory->unmap();
 
     // setup descriptor set layout
-    VkDescriptorSetLayoutBinding layoutBinding = {};
-    layoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    layoutBinding.descriptorCount = 1;
-    layoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    layoutBinding.pImmutableSamplers = nullptr;
-
-    VkDescriptorSetLayoutCreateInfo descLayout = {};
-    descLayout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descLayout.pNext = nullptr;
-    descLayout.bindingCount = 1;
-    descLayout.pBindings = &layoutBinding;
-
-    err = vkCreateDescriptorSetLayout(_device->vkDevice(), &descLayout, nullptr, &_descriptorSetLayout);
-    MAGNUM_VK_ASSERT_ERROR(err);
+    _descriptorSetLayout.reset(new DescriptorSetLayout{*_device, {{0, DescriptorType::UniformBuffer, 1, ShaderStage::Vertex}}});
 
     // Pipeline! :D
 
@@ -359,36 +346,19 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     pipeline.addShader(ShaderStage::Vertex, *_vertexShader);
     pipeline.addShader(ShaderStage::Fragment, *_fragmentShader);
 
-    pipeline.addDescriptorSetLayout(_descriptorSetLayout);
+    pipeline.addDescriptorSetLayout(*_descriptorSetLayout);
 
     pipeline.setRenderPass(_renderPass);
 
     _pipeline = pipeline.create();
 
     // setup descriptor pool and descriptor set
-    VkDescriptorPoolSize typeCounts;
-    typeCounts.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    typeCounts.descriptorCount = 1;
+    DescriptorPoolCreateInfo createInfo{*_device};
+    createInfo.setPoolSize(DescriptorType::UniformBuffer, 1);
 
-    VkDescriptorPoolCreateInfo deadpoolInfo = {};
-    deadpoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    deadpoolInfo.pNext = nullptr;
-    deadpoolInfo.poolSizeCount = 1;
-    deadpoolInfo.pPoolSizes = &typeCounts;
-    deadpoolInfo.maxSets = 1;
+    _deadpool.reset(new DescriptorPool{*_device, 1, createInfo});
 
-    err = vkCreateDescriptorPool(_device->vkDevice(), &deadpoolInfo, nullptr, &_deadpool);
-    MAGNUM_VK_ASSERT_ERROR(err);
-
-    VkDescriptorSetAllocateInfo dSetInfo = {};
-    dSetInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dSetInfo.pNext = nullptr;
-    dSetInfo.descriptorPool = _deadpool;
-    dSetInfo.descriptorSetCount = 1;
-    dSetInfo.pSetLayouts = &_descriptorSetLayout;
-
-    err = vkAllocateDescriptorSets(_device->vkDevice(), &dSetInfo, &_descriptorSet);
-    MAGNUM_VK_ASSERT_ERROR(err);
+    _descriptorSet = _deadpool->allocateDescriptorSet(*_descriptorSetLayout);
 
     VkWriteDescriptorSet dSet = {};
     dSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -398,11 +368,11 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     dSet.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     dSet.pBufferInfo = &_uniformDescriptor;
     dSet.dstBinding = 0;
-    dSet.dstSet = _descriptorSet;
+    dSet.dstSet = *_descriptorSet;
     dSet.pImageInfo = nullptr;
     dSet.pTexelBufferView = nullptr;
 
-    vkUpdateDescriptorSets(_device->vkDevice(), 1, &dSet, 0, nullptr);
+    vkUpdateDescriptorSets(*_device, 1, &dSet, 0, nullptr);
 
     // FINALLY! build command buffers
     VkClearValue clearValues[2];
@@ -419,13 +389,9 @@ VulkanExample::VulkanExample(const Arguments& arguments)
                  .beginRenderPass(CommandBuffer::SubpassContents::Inline, _renderPass, _frameBuffers[i],
                                   Range2Di{{}, {800, 600}}, {clearValues[0], clearValues[1]});
 
-        cmdBuffer << _pipeline->bind(BindPoint::Graphics, {_descriptorSet})
+        cmdBuffer << _pipeline->bind(BindPoint::Graphics, {*_descriptorSet})
                   << Cmd::setViewport(0, {VkViewport{0, 0, 800, 600, 0.0f, 1.0f}})
                   << Cmd::setScissor(0, {Range2Di{{}, {800, 600}}});
-
-        vkCmdBindDescriptorSets(cmdBuffer,
-                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                _pipeline->layout(), 0, 1, &_descriptorSet, 0, nullptr);
 
         vkCmdBindPipeline(cmdBuffer,
                           VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -446,7 +412,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
                     VkImageSubresourceRange{
                         VK_IMAGE_ASPECT_COLOR_BIT,
                         0, 1, 0, 1
-                    }, Access::MemoryRead, Access::ColorAttachmentWrite
+                    }, Access::ColorAttachmentWrite, Access::MemoryRead
         };
 
         cmdBuffer << Cmd::pipelineBarrier(
@@ -459,9 +425,6 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 }
 
 VulkanExample::~VulkanExample() {
-    vkFreeDescriptorSets(_device->vkDevice(), _deadpool, 1, &_descriptorSet);
-    vkDestroyDescriptorPool(_device->vkDevice(), _deadpool, nullptr);
-    vkDestroyDescriptorSetLayout(_device->vkDevice(), _descriptorSetLayout, nullptr);
 }
 
 void VulkanExample::drawEvent() {
@@ -482,13 +445,10 @@ void VulkanExample::drawEvent() {
 
     // Use dedicated command buffer from example base class for submitting the post present barrier
     _cmdBuffers.postPresent->begin();
-
-    // Put post present barrier into command buffer
     *_cmdBuffers.postPresent << Cmd::pipelineBarrier(
                                     PipelineStage::AllCommands,
                                     PipelineStage::TopOfThePipe,
                                     {}, {}, {postPresentBarrier});
-
     _cmdBuffers.postPresent->end();
 
     _queue->submit(*_cmdBuffers.postPresent)
