@@ -210,13 +210,9 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     VkMemoryRequirements memReqs =  _depthStencil.image->getMemoryRequirements();
 
-    Debug() << "Memory Requirements:" << memReqs.size;
     UnsignedInt memoryTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    Debug() << "Memory type:" << memoryTypeIndex;
     _depthStencil.mem.reset(new DeviceMemory{*_device, memReqs.size, memoryTypeIndex});
-
-    err = vkBindImageMemory(_device->vkDevice(), *_depthStencil.image, *_depthStencil.mem, 0);
-    MAGNUM_VK_ASSERT_ERROR(err);
+    _depthStencil.image->bindImageMemory(*_depthStencil.mem);
 
     ImageMemoryBarrier imageMemoryBarrier{*_depthStencil.image, ImageLayout::Undefined, ImageLayout::DepthStencilAttachmentOptimal,
                 VkImageSubresourceRange{
@@ -262,7 +258,6 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     memReqs = vBuffer.getMemoryRequirements();
 
-    Debug() << "Memory requirements:" << memReqs.size;
     UnsignedInt memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
     DeviceMemory vMemory{*_device, memReqs.size, memTypeIndex};
 
@@ -275,7 +270,6 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _vertexBuffer.reset(new Vk::Buffer{*_device, sizeof(vertexData), Vk::BufferUsage::VertexBuffer | Vk::BufferUsage::TransferDst});
 
     memReqs = _vertexBuffer->getMemoryRequirements();
-    Debug() << "Memory requirements:" << memReqs.size;
     memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     _vertexBufferMemory.reset(new DeviceMemory{*_device, memReqs.size, memTypeIndex});
@@ -343,12 +337,10 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _vertexShader = loadShader(*_device, "./shaders/triangle.vert.spv");
     _fragmentShader = loadShader(*_device, "./shaders/triangle.frag.spv");
 
-    pipeline.addShader(ShaderStage::Vertex, *_vertexShader);
-    pipeline.addShader(ShaderStage::Fragment, *_fragmentShader);
-
-    pipeline.addDescriptorSetLayout(*_descriptorSetLayout);
-
-    pipeline.setRenderPass(_renderPass);
+    pipeline.addShader(ShaderStage::Vertex, *_vertexShader)
+            .addShader(ShaderStage::Fragment, *_fragmentShader)
+            .addDescriptorSetLayout(*_descriptorSetLayout)
+            .setRenderPass(_renderPass);
 
     _pipeline = pipeline.create();
 
@@ -389,13 +381,10 @@ VulkanExample::VulkanExample(const Arguments& arguments)
                  .beginRenderPass(CommandBuffer::SubpassContents::Inline, _renderPass, _frameBuffers[i],
                                   Range2Di{{}, {800, 600}}, {clearValues[0], clearValues[1]});
 
-        cmdBuffer << _pipeline->bind(BindPoint::Graphics, {*_descriptorSet})
+        cmdBuffer << _pipeline->bindDescriptorSets(BindPoint::Graphics, {*_descriptorSet})
                   << Cmd::setViewport(0, {VkViewport{0, 0, 800, 600, 0.0f, 1.0f}})
-                  << Cmd::setScissor(0, {Range2Di{{}, {800, 600}}});
-
-        vkCmdBindPipeline(cmdBuffer,
-                          VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          *_pipeline);
+                  << Cmd::setScissor(0, {Range2Di{{}, {800, 600}}})
+                  << _pipeline->bind(BindPoint::Graphics);
 
         VkDeviceSize offset = 0;
 
