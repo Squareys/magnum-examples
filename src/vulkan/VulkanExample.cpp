@@ -32,13 +32,15 @@
 #include <Magnum/Vk/Buffer.h>
 #include <Magnum/Vk/Command.h>
 #include <Magnum/Vk/CommandPool.h>
-#include <Magnum/Vk/Context.h>
+#include <Magnum/Vk/Instance.h>
 #include <Magnum/Vk/DescriptorPool.h>
 #include <Magnum/Vk/Device.h>
 #include <Magnum/Vk/DeviceMemory.h>
 #include <Magnum/Vk/Framebuffer.h>
 #include <Magnum/Vk/Image.h>
 #include <Magnum/Vk/ImageView.h>
+#include <Magnum/Vk/Math.h>
+#include <Magnum/Vk/Mesh.h>
 #include <Magnum/Vk/PhysicalDevice.h>
 #include <Magnum/Vk/Pipeline.h>
 #include <Magnum/Vk/Queue.h>
@@ -79,7 +81,7 @@ class VulkanExample: public Platform::Application {
         void mouseMoveEvent(MouseMoveEvent& event) override;
         void mouseScrollEvent(MouseScrollEvent& event) override;
 
-        Vk::Context _context;
+        Vk::Instance _Instance;
         std::unique_ptr<Device> _device;
         VkPipelineStageFlags _submitPipelineStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 
@@ -135,43 +137,26 @@ class VulkanExample: public Platform::Application {
         std::unique_ptr<DescriptorSet> _descriptorSet;
         std::unique_ptr<DescriptorSetLayout> _descriptorSetLayout;
 
-        Float _rot;
         UnsignedInt _currentBuffer;
 
         std::unique_ptr<Vk::Shader> _vertexShader;
         std::unique_ptr<Vk::Shader> _fragmentShader;
+
+        Vk::Mesh _triangleMesh;
 };
 
 VulkanExample::VulkanExample(const Arguments& arguments)
     : Platform::Application{arguments, Configuration{}.setTitle("Magnum Vulkan Triangle Example")},
-      _context{{Vk::Context::Flag::EnableValidation}},
-      _swapchain{nullptr},
-      _rot{0.0f},
+      _Instance{{Vk::Instance::Flag::EnableValidation}},
       _currentBuffer{0},
       _renderPass{NoCreate}
 {
-    // Physical device
-    uint32_t gpuCount = 0;
-    // Get number of available physical devices
-    VkResult err = vkEnumeratePhysicalDevices(_context.vkInstance(), &gpuCount, nullptr);
-    if(err != VK_SUCCESS) {
-        Error() << err;
-    }
-    assert(gpuCount > 0);
-    // Enumerate devices
-    std::vector<VkPhysicalDevice> physicalDevices(gpuCount);
-    err = vkEnumeratePhysicalDevices(_context.vkInstance(), &gpuCount, physicalDevices.data());
-    if (err)
-    {
-        Error() << "Could not enumerate phyiscal devices:\n" << err;
-        std::exit(8);
-    }
-
-    // Note :
+    // Note:
     // This example will always use the first physical device reported,
     // change the vector index if you have multiple Vulkan devices installed
     // and want to use another one
-    PhysicalDevice physicalDevice = PhysicalDevice{physicalDevices[0]};
+    Containers::Array<PhysicalDevice> physicalDevices = _Instance.enumeratePhysicalDevices();
+    PhysicalDevice& physicalDevice = physicalDevices[0];
 
     UnsignedInt graphicsQueueIndex = physicalDevice.getQueueFamilyIndex(QueueFamily::Graphics);
 
@@ -183,7 +168,6 @@ VulkanExample::VulkanExample(const Arguments& arguments)
         graphicsQueueIndex, 1, &queuePriorities};
 
     _device.reset(new Device{physicalDevice, queueCreateInfo});
-    MAGNUM_VK_ASSERT_ERROR(err);
 
     // Find a suitable depth format
     VkFormat depthFormat = physicalDevice.getSupportedDepthFormat();
@@ -201,10 +185,8 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _surface = createVkSurface();
     _swapchain.reset(new Swapchain{*_device, *_setupCmdBuffer, _surface});
 
-    _cmdBuffers.prePresent =
-            _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
-    _cmdBuffers.postPresent =
-            _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
+    _cmdBuffers.prePresent = _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
+    _cmdBuffers.postPresent = _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
 
     _depthStencil.image.reset(new Vk::Image(*_device, Vector3ui{800, 600, 1}, depthFormat, ImageUsageFlag::StencilAttachment | ImageUsageFlag::TransferSrc));
 
@@ -262,7 +244,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     DeviceMemory vMemory{*_device, memReqs.size, memTypeIndex};
 
     Containers::Array<char> data = vMemory.map();
-    std::memcpy(data, vertexData, vBuffer.size()); // argh, is there something better than this in C++11?
+    std::memcpy(data, vertexData, vBuffer.size());
     vMemory.unmap();
 
     vBuffer.bindBufferMemory(vMemory);
@@ -278,7 +260,6 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     memReqs = iBuffer.getMemoryRequirements();
     memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
     DeviceMemory iMemory{*_device, memReqs.size, memTypeIndex};
-    MAGNUM_VK_ASSERT_ERROR(err);
 
     data = iMemory.map();
     memcpy(data, indices, iBuffer.size());
@@ -295,13 +276,16 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _indexBuffer->bindBufferMemory(*_indexBufferMemory);
 
     std::unique_ptr<CommandBuffer> copyToDeviceCmds = _cmdPool->allocateCommandBuffer(CommandBuffer::Level::Primary);
-    copyToDeviceCmds->begin();
-    *copyToDeviceCmds << vBuffer.cmdFullCopyTo(*_vertexBuffer)
-                      << iBuffer.cmdFullCopyTo(*_indexBuffer);
-    copyToDeviceCmds->end();
+    *copyToDeviceCmds << Cmd::begin()
+                      << vBuffer.cmdFullCopyTo(*_vertexBuffer)
+                      << iBuffer.cmdFullCopyTo(*_indexBuffer)
+                      << Cmd::end();
 
     _queue->submit(*copyToDeviceCmds)
            .waitIdle();
+
+    _triangleMesh.addVertexBuffer(*_vertexBuffer);
+    _triangleMesh.setIndexBuffer(*_indexBuffer);
 
     /* Uniform Buffer */
     _uniformBuffer.reset(new Vk::Buffer{*_device, sizeof(_uniforms), Vk::BufferUsage::UniformBuffer});
@@ -316,8 +300,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _uniformDescriptor.offset = 0;
     _uniformDescriptor.range = _uniformBuffer->size();
 
-    // TODO: Clipping Range 0-1
-    _uniforms.projectionMatrix = Matrix4::perspectiveProjection(Deg(60.0f), 800.0f/600.0f, 0.1f, 256.0f);
+    _uniforms.projectionMatrix = Math::perspectiveProjectionZeroToOne<Float>(Deg(60.0f), 800.0f/600.0f, 0.1f, 10.0f);
     _uniforms.viewMatrix = Matrix4::translation(Vector3{0.0f, 0.0f, -2.5f});
     _uniforms.modelMatrix = Matrix4{};
 
@@ -331,18 +314,18 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     // Pipeline! :D
 
-    GraphicsPipelineFactory pipeline{*_device};
-    pipeline.setDynamicStates({DynamicState::Viewport, DynamicState::Scissor});
+    GraphicsPipelineBuilder pipelineBuilder{*_device};
 
     _vertexShader = loadShader(*_device, "./shaders/triangle.vert.spv");
     _fragmentShader = loadShader(*_device, "./shaders/triangle.frag.spv");
 
-    pipeline.addShader(ShaderStage::Vertex, *_vertexShader)
+    _pipeline = pipelineBuilder
+            .setDynamicStates({DynamicState::Viewport, DynamicState::Scissor})
+            .addShader(ShaderStage::Vertex, *_vertexShader)
             .addShader(ShaderStage::Fragment, *_fragmentShader)
             .addDescriptorSetLayout(*_descriptorSetLayout)
-            .setRenderPass(_renderPass);
-
-    _pipeline = pipeline.create();
+            .setRenderPass(_renderPass)
+            .build();
 
     // setup descriptor pool and descriptor set
     DescriptorPoolCreateInfo createInfo{*_device};
@@ -386,13 +369,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
                   << Cmd::setScissor(0, {Range2Di{{}, {800, 600}}})
                   << _pipeline->bind(BindPoint::Graphics);
 
-        VkDeviceSize offset = 0;
-
-        VkBuffer vertexBuffer = *_vertexBuffer;
-        vkCmdBindVertexBuffers(cmdBuffer, 0, 1, &vertexBuffer, &offset);
-        vkCmdBindIndexBuffer(cmdBuffer, *_indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-        vkCmdDrawIndexed(cmdBuffer, 3, 1, 0, 0, 1);
+        cmdBuffer << _triangleMesh.draw();
 
         cmdBuffer.endRenderPass();
 
@@ -407,9 +384,8 @@ VulkanExample::VulkanExample(const Arguments& arguments)
         cmdBuffer << Cmd::pipelineBarrier(
                          PipelineStage::AllCommands,
                          PipelineStage::BottomOfPipe,
-                         {}, {}, {prePresentBarrier});
-
-        cmdBuffer.end();
+                         {}, {}, {prePresentBarrier})
+                  << Cmd::end();
     }
 }
 
@@ -433,12 +409,12 @@ void VulkanExample::drawEvent() {
     };
 
     // Use dedicated command buffer from example base class for submitting the post present barrier
-    _cmdBuffers.postPresent->begin();
-    *_cmdBuffers.postPresent << Cmd::pipelineBarrier(
+    *_cmdBuffers.postPresent << Cmd::begin()
+                             << Cmd::pipelineBarrier(
                                     PipelineStage::AllCommands,
                                     PipelineStage::TopOfThePipe,
-                                    {}, {}, {postPresentBarrier});
-    _cmdBuffers.postPresent->end();
+                                    {}, {}, {postPresentBarrier})
+                             << Cmd::end();
 
     _queue->submit(*_cmdBuffers.postPresent)
            .submit(*_drawCmdBuffers[_swapchain->currentIndex()],
@@ -463,9 +439,8 @@ void VulkanExample::mousePressEvent(MouseEvent&) {
 void VulkanExample::mouseReleaseEvent(MouseEvent&) {
 }
 
-void VulkanExample::mouseMoveEvent(MouseMoveEvent&) {
-    _rot += 0.5f;
-    _uniforms.modelMatrix = Matrix4::rotationY(Deg(_rot));
+void VulkanExample::mouseMoveEvent(MouseMoveEvent& event) {
+    _uniforms.modelMatrix = Matrix4::rotationY(Deg(event.position().x())) * Matrix4::rotationX(Deg(event.position().y()));
 
     // Map uniform buffer and update it
     Containers::Array<char> data = _uniformBufferMemory->map();
