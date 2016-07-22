@@ -192,7 +192,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     VkMemoryRequirements memReqs =  _depthStencil.image->getMemoryRequirements();
 
-    UnsignedInt memoryTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    UnsignedInt memoryTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, MemoryProperty::DeviceLocal);
     _depthStencil.mem.reset(new DeviceMemory{*_device, memReqs.size, memoryTypeIndex});
     _depthStencil.image->bindImageMemory(*_depthStencil.mem);
 
@@ -240,7 +240,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     memReqs = vBuffer.getMemoryRequirements();
 
-    UnsignedInt memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    UnsignedInt memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, MemoryProperty::HostVisible);
     DeviceMemory vMemory{*_device, memReqs.size, memTypeIndex};
 
     Containers::Array<char> data = vMemory.map();
@@ -252,13 +252,13 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _vertexBuffer.reset(new Vk::Buffer{*_device, sizeof(vertexData), Vk::BufferUsage::VertexBuffer | Vk::BufferUsage::TransferDst});
 
     memReqs = _vertexBuffer->getMemoryRequirements();
-    memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, MemoryProperty::DeviceLocal);
 
     _vertexBufferMemory.reset(new DeviceMemory{*_device, memReqs.size, memTypeIndex});
     _vertexBuffer->bindBufferMemory(*_vertexBufferMemory);
 
     memReqs = iBuffer.getMemoryRequirements();
-    memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, MemoryProperty::HostVisible);
     DeviceMemory iMemory{*_device, memReqs.size, memTypeIndex};
 
     data = iMemory.map();
@@ -270,7 +270,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
     _indexBuffer.reset(new Vk::Buffer{*_device, sizeof(indices), Vk::BufferUsage::IndexBuffer | Vk::BufferUsage::TransferDst});
 
     memReqs = _indexBuffer->getMemoryRequirements();
-    memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, MemoryProperty::DeviceLocal);
 
     _indexBufferMemory.reset(new DeviceMemory{*_device, memReqs.size, memTypeIndex});
     _indexBuffer->bindBufferMemory(*_indexBufferMemory);
@@ -292,7 +292,7 @@ VulkanExample::VulkanExample(const Arguments& arguments)
 
     memReqs = _uniformBuffer->getMemoryRequirements();
 
-    memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    memTypeIndex = physicalDevice.getMemoryType(memReqs.memoryTypeBits, MemoryProperty::HostVisible);
     _uniformBufferMemory.reset(new DeviceMemory{*_device, memReqs.size, memTypeIndex});
     _uniformBuffer->bindBufferMemory(*_uniformBufferMemory);
 
