@@ -63,6 +63,10 @@ if(WITH_BULLET_EXAMPLE)
     add_subdirectory(bullet)
 endif()
 
+if(WITH_CLUSTEREDFORWARD_EXAMPLE)
+    add_subdirectory(clustered-forward)
+endif()
+
 if(WITH_CUBEMAP_EXAMPLE)
     add_subdirectory(cubemap)
 endif()
