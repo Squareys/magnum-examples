@@ -93,7 +93,7 @@ Vector3 calculateIntersection(const Vector4 &v1, const Vector4 &v2, const Vector
     const Float y = Matrix3({v1.x(), v2.x(), v3.x()}, {v1.w(), v2.w(), v3.w()}, {v1.z(), v2.z(), v3.z()}).determinant()/det;
     const Float z = Matrix3({v1.x(), v2.x(), v3.x()}, {v1.y(), v2.y(), v3.y()}, {v1.w(), v2.w(), v3.w()}).determinant()/det;
 
-    return Vector3{x, y, -z};
+    return -Vector3{x, y, z};
 }
 
 GL::Mesh frustumMesh(const Frustum& frustum) {
