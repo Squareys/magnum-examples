@@ -1,3 +1,5 @@
+uniform vec2 scale;
+
 void main() {
-    /* Just assigns depth values */
+    /* Only assign depth values */
 }

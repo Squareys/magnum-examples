@@ -31,8 +31,11 @@
 #include "Magnum/Math/Functions.h"
 #include "Magnum/Math/Vector2.h"
 #include "Magnum/Math/Vector3.h"
+#include "Magnum/Math/Vector4.h"
 #include "Magnum/Shaders/Generic.h"
 #include "Magnum/Shaders/visibility.h"
+
+#define DEPTH_SLICES 16
 
 namespace Magnum { namespace Examples {
 

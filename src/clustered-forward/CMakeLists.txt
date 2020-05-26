@@ -36,7 +36,8 @@ if(PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/../../modules/" ${CMAKE_MODULE_PATH})
 endif()
 
-find_package(Magnum REQUIRED GL Shaders Sdl2Application Primitives Trade MeshTools)
+find_package(Corrade REQUIRED Main)
+find_package(Magnum REQUIRED GL Shaders Sdl2Application Primitives Trade DebugTools MeshTools)
 
 set_directory_properties(PROPERTIES CORRADE_USE_PEDANTIC_FLAGS ON)
 
@@ -51,6 +52,8 @@ target_link_libraries(magnum-clustered-forward PRIVATE
     Magnum::Primitives
     Magnum::Trade
     Magnum::MeshTools
+    Magnum::DebugTools
+    Corrade::Main
     Magnum::Shaders)
 target_compile_definitions(magnum-clustered-forward PRIVATE "-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 

@@ -35,6 +35,7 @@
 #include <Corrade/Utility/FormatStl.h>
 #include <Corrade/PluginManager/PluginManager.h>
 #include <Corrade/PluginManager/Manager.h>
+#include <Corrade/Utility/DebugStl.h>
 
 #include <Magnum/Image.h>
 #include <Magnum/ImageView.h>
@@ -49,6 +50,7 @@
 #include <Magnum/GL/TextureFormat.h>
 #include <Magnum/GL/Version.h>
 #include <Magnum/GL/GL.h>
+#include <Magnum/DebugTools/FrameProfiler.h>
 #include <Magnum/PixelFormat.h>
 #include <Magnum/Math/Color.h>
 #include <Magnum/Math/Intersection.h>
@@ -143,6 +145,7 @@ public:
         scaleUniform = uniformLocation("scale");
         transformationUniform = uniformLocation("transformationMatrix");
         projectionUniform = uniformLocation("projectionMatrix");
+        viewUniform = uniformLocation("viewMatrix");
     }
 
     DepthShader& setProjectionParams(float near, float far) {
@@ -160,9 +163,15 @@ public:
         return *this;
     }
 
+    DepthShader& setViewMatrix(const Matrix4& p) {
+        setUniform(viewUniform, p);
+        return *this;
+    }
+
     int scaleUniform;
     int transformationUniform;
     int projectionUniform;
+    int viewUniform;
 };
 
 class ClusterAssignmentShader : public GL::AbstractShaderProgram {
@@ -260,7 +269,7 @@ private:
     DepthShader _depthShader;
     Shaders::Phong _shader;
     // TODO: Configurable num lights
-    size_t _numLights = 8*8*4;
+    size_t _numLights = 16*8*2;
     ClusteredForwardPhong _clusteredShader{_numLights, {}, {TILES_X, TILES_Y, DEPTH_SLICES}};
 
     GL::Framebuffer _depthFramebuffer{NoCreate};
@@ -271,6 +280,13 @@ private:
     GL::Texture1D _lightListTexture;
     GL::Texture2D _clusterKeyMasks;
     GL::Texture3D _clusterMapTexture;
+
+    DebugTools::GLFrameProfiler _profiler{DebugTools::GLFrameProfiler::Value::FrameTime|
+        DebugTools::GLFrameProfiler::Value::GpuDuration, 50};
+    DebugTools::GLFrameProfiler _profilerAssignment{DebugTools::GLFrameProfiler::Value::FrameTime|
+        DebugTools::GLFrameProfiler::Value::GpuDuration, 50};
+    DebugTools::GLFrameProfiler _profilerRender{DebugTools::GLFrameProfiler::Value::FrameTime|
+        DebugTools::GLFrameProfiler::Value::GpuDuration, 50};
 
     Image2D _clusterKeyMasksImage{PixelFormat::R16UI, {TILES_X, TILES_Y},
         Containers::Array<char>{Containers::ValueInit, sizeof(UnsignedShort)*TILES_X*TILES_Y}};
@@ -303,6 +319,7 @@ private:
     } _debugOptions;
 
     float _lastTime = 0.0f;
+    int _framesSinceStats = 0;
 };
 
 ClusteredForwardExample::ClusteredForwardExample(const Arguments& arguments):
@@ -315,6 +332,8 @@ ClusteredForwardExample::ClusteredForwardExample(const Arguments& arguments):
 
     _depthTexture
         .setWrapping({GL::SamplerWrapping::ClampToEdge})
+        .setMinificationFilter(GL::SamplerFilter::Nearest)
+        .setMagnificationFilter(GL::SamplerFilter::Nearest)
         .setStorage(1, GL::TextureFormat::DepthComponent32F, framebufferSize());
     _depthFramebuffer = GL::Framebuffer({{}, framebufferSize()});
     _depthFramebuffer
@@ -339,10 +358,10 @@ ClusteredForwardExample::ClusteredForwardExample(const Arguments& arguments):
         .setStorage(1, GL::TextureFormat::R16UI, int(_lightList.size()));
 
     int i = 0;
-    Vector3 r{160.0f, 100.0f, 100.0f};
-    for(int x = 0; x < 8; ++x) {
+    Vector3 r{80.0f, 150.0f, 50.0f};
+    for(int x = 0; x < 16; ++x) {
         for(int y = 0; y < 8; ++y) {
-            for(int z = 0; z < 4; ++z) {
+            for(int z = 0; z < 2; ++z) {
                 /* Scale to range -20;20 */
                 _lightPositions[i] =
                     Vector4{
@@ -387,7 +406,7 @@ void ClusteredForwardExample::drawEvent() {
 
     GL::defaultFramebuffer.clear(GL::FramebufferClear::Depth|GL::FramebufferClear::Color);
     const Deg fov = 45.0_degf;
-    const Float near = 0.01f;
+    const Float near = 0.1f;
     const Float far = 500.0f;
 
     const Matrix4 projection = Matrix4::perspectiveProjection(fov, Vector2{windowSize()}.aspectRatio(), near, far);
@@ -408,16 +427,19 @@ void ClusteredForwardExample::drawEvent() {
        (Depth buffer only in our case, as we do not
        use the normals to fine-tune custers.) */
 
+    _profiler.beginFrame();
+
     _depthFramebuffer.bind();
     _depthFramebuffer.clear(GL::FramebufferClear::Depth);
     _depthFramebuffer.mapForDraw(GL::Framebuffer::ColorAttachment{0});
 
     _depthShader.setProjectionParams(near, far)
+        .setViewMatrix(_view)
         .setProjectionMatrix(projection);
     for(int i = 0; i < _meshes.size(); ++i) {
         auto& mesh = _meshes[i];
         _depthShader
-            .setTransformationMatrix(_view*_transformations[i])
+            .setTransformationMatrix(_transformations[i])
             .draw(mesh);
     }
 
@@ -430,6 +452,8 @@ void ClusteredForwardExample::drawEvent() {
      * we store an unsigned short bitmask per screen space tile (32x32) to indicate
      * whether the associated cluster is being used. */
 
+    _profilerAssignment.beginFrame();
+    GL::Renderer::disable(GL::Renderer::Feature::DepthTest);
     _clusterKeyFramebuffer.mapForDraw(GL::Framebuffer::ColorAttachment(0)).bind();
     _clusterKeyFramebuffer.clear(GL::FramebufferClear::Color);
     _clusterAssignmentShader
@@ -440,6 +464,7 @@ void ClusteredForwardExample::drawEvent() {
         .setProjection(projection)
         .setFov(fov);
     _clusterAssignmentShader.draw(MeshTools::fullScreenTriangle());
+    GL::Renderer::enable(GL::Renderer::Feature::DepthTest);
 
     // Read back pixels from buffer
     _clusterKeyFramebuffer.mapForRead(GL::Framebuffer::ColorAttachment(0));
@@ -448,6 +473,7 @@ void ClusteredForwardExample::drawEvent() {
      //_clusterKeyMasks.image(0, _clusterKeyMasksImage);
     // Or:
     _clusterKeyFramebuffer.read({{}, {TILES_X, TILES_Y}}, _clusterKeyMasksImage);
+    _profilerAssignment.endFrame();
 
     /* 4 Assign lights to clusters */
     GL::defaultFramebuffer.bind();
@@ -465,7 +491,6 @@ void ClusteredForwardExample::drawEvent() {
     Frustum frustum = Frustum::fromMatrix(projection*_view);
     for(auto& p : frustum) p /= p.xyz().length();
 
-
     Containers::Array<Frustum> cells;
     const Matrix4 v = _view.inverted();
     const Vector3 right = v.right();
@@ -479,6 +504,17 @@ void ClusteredForwardExample::drawEvent() {
 
     int lightListCount = 0;
     const Vector3 front = o + fwd*near;
+
+    /* Find overlapping lights */
+    Containers::Array<Vector4> lights;
+    Containers::Array<UnsignedInt> lightIndices;
+    for(UnsignedInt i = 0; i < _lightPositions.size(); ++i) {
+        const Vector3& sphere = _lightPositions[i].xyz();
+        if(Math::Intersection::sphereFrustum(sphere, _lightPositions[i].w(), frustum)) {
+            Containers::arrayAppend(lights, _lightPositions[i]);
+            Containers::arrayAppend(lightIndices, i);
+        }
+    }
 
     Frustum lastCell;
     for(int x = 0; x < TILES_X; ++x) {
@@ -494,18 +530,18 @@ void ClusteredForwardExample::drawEvent() {
             const Vector3 ru = r + u;
             const Vector3 rd = r + d;
 
-            const Vector4 leftPlane = Math::planeEquation(o, lu, ld);
-            const Vector4 rightPlane = Math::planeEquation(o, rd, ru);
+            const Vector4 leftPlane = Math::planeEquation(o, ld, lu);
+            const Vector4 rightPlane = Math::planeEquation(o, ru, rd);
 
-            const Vector4 bottomPlane = Math::planeEquation(o, ld, rd);
-            const Vector4 topPlane = Math::planeEquation(o, ru, lu);
+            const Vector4 bottomPlane = Math::planeEquation(o, rd, ld);
+            const Vector4 topPlane = Math::planeEquation(o, lu, ru);
 
             const UnsignedShort mask = _clusterKeyMasksImage.pixels<UnsignedShort>()[y][x];
             if(mask == 0) continue;
 
             for(int slice = 0; slice < DEPTH_SLICES; ++slice) {
                 /* Check if cluster is used */
-                if((mask & (1u << slice)) == 0) continue;
+                if((mask & (1u << (slice))) == 0) continue;
                 ++numClusters;
 
                 const Vector3 n = o + fwd*depthPlanes[slice];
@@ -514,36 +550,43 @@ void ClusteredForwardExample::drawEvent() {
                     leftPlane, rightPlane,
                     bottomPlane, topPlane,
 
-                    Math::planeEquation(-fwd, n),
-                    Math::planeEquation(fwd, f)
+                    Math::planeEquation(fwd, n),
+                    Math::planeEquation(-fwd, f)
                 };
+
                 // TODO: Only need to normalize plane 0-3
-                for(auto& p : frustum) p /= p.xyz().length();
+                //for(auto& p : frustum) p /= p.xyz().length();
 
                 if(_debugOptions._visualizeCells) {
                     Containers::arrayAppend(cells, cell);
                 }
                 lastCell = cell;
 
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.left().xyz(), -right) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.right().xyz(), right) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.bottom().xyz(), -up) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.top().xyz(), up) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.near().xyz(), -fwd) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.far().xyz(), fwd) > 0.0f);
+                // TODO: Only need to normalize plane 0-3
+                //for(auto& p : frustum) p /= p.xyz().length();
+
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.left().xyz(), frustum.left().xyz()) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.right().xyz(), frustum.right().xyz()) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.bottom().xyz(), frustum.bottom().xyz()) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.top().xyz(), frustum.top().xyz()) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.near().xyz(), frustum.near().xyz()) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.far().xyz(), frustum.far().xyz()) > 0.0f);
+
+                //Debug() << "---";
+                //for(auto& p : cell) Debug() << p;
 
                 /* For calculating the num lights for this cell */
                 const int lightListOffset = lightListCount;
 
                 /* Find overlapping lights */
-                for(size_t i = 0; i < _lightPositions.size(); ++i) {
-                    const Vector3& sphere = _lightPositions[i].xyz();
-                    if(Math::Intersection::sphereFrustum(sphere, _lightPositions[i].w(), frustum)) {
+                for(size_t i = 0; i < lights.size(); ++i) {
+                    const Vector3& sphere = lights[i].xyz();
+                    if(Math::Intersection::sphereFrustum(sphere, lights[i].w(), cell)) {
                         if(lightListCount >= _lightList.size()) {
                             Warning() << "!(lightListCount < _lightList.size())";
                             goto end;
                         }
-                        _lightList[lightListCount++] = i;
+                        _lightList[lightListCount++] = lightIndices[i];
                     }
                 }
 
@@ -557,13 +600,16 @@ void ClusteredForwardExample::drawEvent() {
 
 end:
 
+    _profilerRender.beginFrame();
     _lightListTexture.setSubImage(0, {},
         ImageView1D{PixelFormat::R16UI, lightListCount, _lightList});
     _clusterMapTexture.setSubImage(0, {}, _clusterMapImage);
 
-    Debug() << "clusters:" << numClusters << ", lights:" << lightListCount << ", in" <<
+    /*
+    Debug() << "clusters:" << numClusters << ", lights:" << lightListCount << "/" << lights.size() << ", in" <<
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::high_resolution_clock::now() - start).count()/1000.0f << "ms";
+    */
 
     // 5 Shade samples
 
@@ -586,11 +632,11 @@ end:
             .setTransformationMatrix(_transformations[i])
             .draw(mesh);
     }
+    _profilerRender.endFrame();
 
     if(_debugOptions._visualizeLights) {
-        GL::Renderer::disable(GL::Renderer::Feature::DepthTest);
-        for(const Vector4& sphere : _lightPositions) {
-            bool visible = Math::Intersection::sphereFrustum(sphere.xyz(), sphere.w(), lastCell);
+        for(const Vector4& sphere : lights) {
+            bool visible = Math::Intersection::sphereFrustum(sphere.xyz(), sphere.w(), frustum);
             _flat
                 .setColor(visible ? Color4{1.0f, 0.0f, 1.0f, 1.0f} : Color4{0.4f, 0.4f, 0.4f, 1.0f})
                 .setTransformationProjectionMatrix(
@@ -599,7 +645,6 @@ end:
                     *Matrix4::scaling(Vector3{2*sphere.w()}))
                 .draw(_sphereMesh);
         }
-        GL::Renderer::enable(GL::Renderer::Feature::DepthTest);
     }
     if(_debugOptions._visualizeFrustum) {
         GL::Renderer::disable(GL::Renderer::Feature::DepthTest);
@@ -636,6 +681,15 @@ end:
             Range2Di{{}, {32, 32}}, Range2Di{{}, {128, 128}},
             GL::FramebufferBlit::Color, GL::FramebufferBlitFilter::Nearest);
     */
+    _profiler.endFrame();
+
+    if(++_framesSinceStats > 30) {
+        Debug() << "Performance";
+        Debug() << " Assignment:\t" << _profilerAssignment.statistics();
+        Debug() << " Render:\t" << _profilerRender.statistics();
+        Debug() << " Frame:\t" << _profiler.statistics();
+        _framesSinceStats = 0;
+    }
 
     swapBuffers();
 

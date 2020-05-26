@@ -212,6 +212,28 @@ layout(location = OBJECT_ID_OUTPUT_ATTRIBUTE_LOCATION)
 out highp uint fragmentObjectId;
 #endif
 
+float linearDepth(float d) {
+    float near = projectionParams.x;
+    float far = projectionParams.y;
+
+    float depth = 2.0*d - 1.0;
+    //return 2.0*near*far/(far + near - (2.0*depth - 1.0)*(far - near));
+    return 2.0*near*far/(far + near - depth*(far - near));
+}
+
+
+uint depthSlice(float d) {
+    float near = projectionParams.x;
+    float far = projectionParams.y;
+    const float depthSlices = DEPTH_SLICES;
+
+    float lfn = log2(far/near);
+    float scale = depthSlices/lfn;
+    float offset = depthSlices*log2(near)/lfn;
+    return uint(log2(d)*scale - offset);
+}
+
+
 void main() {
     lowp const vec4 finalAmbientColor =
         #ifdef AMBIENT_TEXTURE
@@ -253,14 +275,11 @@ void main() {
     const highp float near = projectionParams.x;
     const highp float far = projectionParams.y;
     const highp float depthSlices = DEPTH_SLICES;
-    const highp float depth = near + gl_FragCoord.z*(far - near);
-    const highp float scale = depthSlices/log(far/near);
-    const highp float offset = depthSlices*log(near)/log(far/near);
-
-    uint depthSlice = uint(log(depth)*scale - offset);
+    const float depth = linearDepth(gl_FragCoord.z);
+    uint depthSlice = depthSlice(depth);
     vec3 clusterKey = vec3(floor(screenPos/tileSize), depthSlice);
 
-    uint clusterMap = texture(clusterMapTexture, (clusterKey + vec3(0.5))/vec3(TILES_X, TILES_Y, DEPTH_SLICES)).r;
+    uint clusterMap = texture(clusterMapTexture, (clusterKey)/vec3(TILES_X, TILES_Y, DEPTH_SLICES)).r;
     uint lightOffset = (clusterMap & 0xFFFFFFu);
     uint lightCount = ((clusterMap >> 24u) & 0xFFu);
 
@@ -273,18 +292,28 @@ void main() {
         const float lightRadius = lightPosition.w;
         vec3 l = lightDir/lightRadius;
         float lightDist = length(lightDir);
-        const float attenuation = 1.0/(1.0 + 2*lightDist/lightRadius + dot(l, l));
+        //const float attenuation = 1.0/(1.0 + lightDist/lightRadius);// + dot(l, l));
+        //float attenuation = pow(clamp(1 - pow(lightDist/lightRadius, 8), 0.0, 1.0), 8.0)/(1.0 + (lightDist*lightDist));
+        //float attenuation = pow(clamp(1 - lightDist/lightRadius, 0.0, 1.0), 2.0)/(1.0 + lightDist*lightDist);
+        const float attenuation = smoothstep(lightRadius, 0, lightDist);
         highp vec3 normalizedLightDirection = normalize(lightDir);
 
         //const float lightIntensity = lightColors[i].a;
-        lowp float intensity = max(0.0, 4.0*attenuation*dot(normalizedTransformedNormal, normalizedLightDirection));
+        lowp float intensity = max(0.0, 10*attenuation*dot(normalizedTransformedNormal, normalizedLightDirection));
         lowp vec3 lightColor = lightColors[lightIndex].rgb;
         fragmentColor += vec4(finalDiffuseColor.rgb*lightColor*intensity, finalDiffuseColor.a);
     }
 
+    /* Tone mapping */
+    vec3 hdrColor = fragmentColor.rgb;
+    // reinhard tone mapping
+    vec3 mapped = hdrColor/(hdrColor + vec3(1.0));
+    // gamma correction
+    fragmentColor.rgb = mapped;
+
     #ifdef VIZ_LIGHT_COUNT
     /* Light count visualization */
-    fragmentColor.rgb = lightCount == 0u ? vec3(0, 0, 0) : mix(vec3(0, 1, 0), vec3(1, 0, 0), float(lightCount)/8.0f);
+    fragmentColor.rgb = lightCount == 0u ? vec3(0, 0, 0) : mix(vec3(0, 1, 0), vec3(1, 0, 0), float(lightCount)/16.0f);
     #endif
 
     #ifdef VIZ_DEPTH_SLICE
@@ -330,4 +359,5 @@ void main() {
     #ifdef OBJECT_ID
     fragmentObjectId = objectId;
     #endif
+
 }

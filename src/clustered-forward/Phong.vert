@@ -144,7 +144,7 @@ void main() {
     //gl_Position = projectionMatrix*transformedPosition4;
     gl_Position =
         projectionMatrix*
-        (viewMatrix*transformationMatrix)*
+        viewMatrix*transformationMatrix*
         vec4(position.xyz, 1.0f);
 
     #ifdef TEXTURED
