@@ -349,7 +349,7 @@ ClusteredForwardExample::ClusteredForwardExample(const Arguments& arguments):
                         float(x)/4.0f*2*r.x() - r.x() + 0.25f,
                         float(z)/4.0f*r.y(),
                         float(y)/4.0f*2*r.z() - r.z(),
-                        float(1 + 3*((z+x+y) % 3)) /* Light radius */
+                        5.0f*float(1 + 3*((z+x+y) % 3)) /* Light radius */
                     };
                 _lightColors[i] = Color3{float(x)/8.0f, float(y)/8.0f, 0.01f + float(z)/4.0f}.normalized();
                 ++i;
@@ -538,7 +538,7 @@ void ClusteredForwardExample::drawEvent() {
                 /* Find overlapping lights */
                 for(size_t i = 0; i < _lightPositions.size(); ++i) {
                     const Vector3& sphere = _lightPositions[i].xyz();
-                    if(Math::Intersection::sphereFrustum(sphere, _lightPositions[i].w(), cell)) {
+                    if(Math::Intersection::sphereFrustum(sphere, _lightPositions[i].w(), frustum)) {
                         if(lightListCount >= _lightList.size()) {
                             Warning() << "!(lightListCount < _lightList.size())";
                             goto end;
