@@ -389,9 +389,8 @@ void ClusteredForwardExample::drawEvent() {
     const Deg fov = 45.0_degf;
     const Float near = 0.01f;
     const Float far = 500.0f;
-    const Matrix4 projection =
-        Matrix4::perspectiveProjection(
-            fov, Vector2{windowSize()}.aspectRatio(), near, far);
+
+    const Matrix4 projection = Matrix4::perspectiveProjection(fov, Vector2{windowSize()}.aspectRatio(), near, far);
     const Matrix4 cameraRotationMatrix =
         Matrix4::rotationY(Deg(_cameraRotation.y()))*
         Matrix4::rotationX(Deg(_cameraRotation.x()));
@@ -453,27 +452,29 @@ void ClusteredForwardExample::drawEvent() {
     /* 4 Assign lights to clusters */
     GL::defaultFramebuffer.bind();
     GL::defaultFramebuffer.clear(GL::FramebufferClear::Depth|GL::FramebufferClear::Color);
-    _flat.setTransformationProjectionMatrix(projection*debugView);
-    _flat.setColor(0xff0ffff_rgbaf);
-    Frustum frustum = Frustum::fromMatrix(projection*_view);
-    Containers::Array<Frustum> cells;
 
     auto start = std::chrono::high_resolution_clock::now();
     int numClusters = 0;
 
     float depthPlanes[DEPTH_SLICES + 1];
 
-    const float tanFovV = Math::tan(0.5f*fov); // TODO: one of these needs multiplied with aspect ratio
-    const float tanFovH = Math::tan(0.5f*fov);
-    for(int i = 0; i < DEPTH_SLICES + 1; ++i) {
+    for(int i = 0; i <= DEPTH_SLICES; ++i) {
         depthPlanes[i] = near*Math::pow(far/near, float(i)/DEPTH_SLICES);
     }
 
+    Frustum frustum = Frustum::fromMatrix(projection*_view);
+    for(auto& p : frustum) p /= p.xyz().length();
+
+
+    Containers::Array<Frustum> cells;
     const Matrix4 v = _view.inverted();
+    const Vector3 right = v.right();
     const Vector3 up = v.up();
     const Vector3 fwd = -v.backward();
-    const Vector3 right = v.right();
-    const Vector3 o = _view.translation();
+    const Vector3 o = v.transformPoint({0.0f, 0.0f, 0.0f});
+
+    const float tanFovV = Math::tan(0.5f*fov)/Vector2(windowSize()).aspectRatio();
+    const float tanFovH = Math::tan(0.5f*fov);
     const Vector2 tileSize{tanFovH*near/(0.5f*TILES_X), tanFovV*near/(0.5f*TILES_Y)};
 
     int lightListCount = 0;
@@ -484,14 +485,17 @@ void ClusteredForwardExample::drawEvent() {
         const Vector3 l = front + right*(x - TILES_X/2)*tileSize.x();
         const Vector3 r = front + right*(x - TILES_X/2 + 1)*tileSize.x();
         for(int y = 0; y < TILES_Y; ++y) {
-            const Vector3 lu = l + up*(y - TILES_Y/2)*tileSize.y();
-            const Vector3 ld = l + up*(y - TILES_Y/2 + 1)*tileSize.y();
+            const Vector3 d = up*(y - TILES_Y/2)*tileSize.y();
+            const Vector3 u = up*(y - TILES_Y/2 + 1)*tileSize.y();
 
-            const Vector3 ru = r + up*(y - TILES_Y/2)*tileSize.y();
-            const Vector3 rd = r + up*(y - TILES_Y/2 + 1)*tileSize.y();
+            const Vector3 lu = l + u;
+            const Vector3 ld = l + d;
 
-            const Vector4 leftPlane = Math::planeEquation(o, ld, lu);
-            const Vector4 rightPlane = Math::planeEquation(o, ru, rd);
+            const Vector3 ru = r + u;
+            const Vector3 rd = r + d;
+
+            const Vector4 leftPlane = Math::planeEquation(o, lu, ld);
+            const Vector4 rightPlane = Math::planeEquation(o, rd, ru);
 
             const Vector4 bottomPlane = Math::planeEquation(o, ld, rd);
             const Vector4 topPlane = Math::planeEquation(o, ru, lu);
@@ -510,21 +514,23 @@ void ClusteredForwardExample::drawEvent() {
                     leftPlane, rightPlane,
                     bottomPlane, topPlane,
 
-                    Math::planeEquation(fwd, n),
-                    Math::planeEquation(-fwd, f)
+                    Math::planeEquation(-fwd, n),
+                    Math::planeEquation(fwd, f)
                 };
+                // TODO: Only need to normalize plane 0-3
+                for(auto& p : frustum) p /= p.xyz().length();
 
                 if(_debugOptions._visualizeCells) {
                     Containers::arrayAppend(cells, cell);
                 }
                 lastCell = cell;
 
-                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.left().xyz(), -right) > 0.0f);
-                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.right().xyz(), right) > 0.0f);
-                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.bottom().xyz(), -up) > 0.0f);
-                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.top().xyz(), up) > 0.0f);
-                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.near().xyz(), -fwd) > 0.0f);
-                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.far().xyz(), fwd) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.left().xyz(), -right) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.right().xyz(), right) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.bottom().xyz(), -up) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.top().xyz(), up) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.near().xyz(), -fwd) > 0.0f);
+                CORRADE_INTERNAL_ASSERT(Math::dot(cell.far().xyz(), fwd) > 0.0f);
 
                 /* For calculating the num lights for this cell */
                 const int lightListOffset = lightListCount;
@@ -597,16 +603,16 @@ end:
     }
     if(_debugOptions._visualizeFrustum) {
         GL::Renderer::disable(GL::Renderer::Feature::DepthTest);
-        _flat.setTransformationProjectionMatrix(projection*debugView);
+        _flat.setColor(0xff0ffff_rgbaf)
+             .setTransformationProjectionMatrix(projection*debugView);
         _flat.draw(frustumMesh(frustum));
         GL::Renderer::enable(GL::Renderer::Feature::DepthTest);
     }
     if(_debugOptions._visualizeCells) {
         GL::Renderer::disable(GL::Renderer::Feature::DepthTest);
-        _flat.setTransformationProjectionMatrix(projection*debugView);
-        for(auto& cell : cells) {
-            _flat.draw(frustumMesh(cell));
-        }
+        _flat.setColor(0xff0ffff_rgbaf)
+             .setTransformationProjectionMatrix(projection*debugView);
+        for(auto& cell : cells) _flat.draw(frustumMesh(cell));
         GL::Renderer::enable(GL::Renderer::Feature::DepthTest);
     }
 
