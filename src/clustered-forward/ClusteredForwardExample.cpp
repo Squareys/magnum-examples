@@ -209,7 +209,11 @@ public:
     }
 
     ClusterAssignmentShader& setProjectionParams(float near, float far) {
-        setUniform(projectionParamsUniform, Vector2{near, far});
+        const float lfn = std::log2f(far/near);
+        const float scale = float(DEPTH_SLICES)/lfn;
+        const float offset = float(DEPTH_SLICES)*std::log2f(near)/lfn;
+        setUniform(projectionParamsUniform, Vector4{
+            near, far, scale, offset});
         return *this;
     }
 
@@ -281,12 +285,11 @@ private:
     GL::Texture2D _clusterKeyMasks;
     GL::Texture3D _clusterMapTexture;
 
-    DebugTools::GLFrameProfiler _profiler{DebugTools::GLFrameProfiler::Value::FrameTime|
+    DebugTools::GLFrameProfiler _profiler{DebugTools::GLFrameProfiler::Value::CpuDuration|
         DebugTools::GLFrameProfiler::Value::GpuDuration, 50};
-    DebugTools::GLFrameProfiler _profilerAssignment{DebugTools::GLFrameProfiler::Value::FrameTime|
-        DebugTools::GLFrameProfiler::Value::GpuDuration, 50};
-    DebugTools::GLFrameProfiler _profilerRender{DebugTools::GLFrameProfiler::Value::FrameTime|
-        DebugTools::GLFrameProfiler::Value::GpuDuration, 50};
+    DebugTools::GLFrameProfiler _profilerAssignment{DebugTools::GLFrameProfiler::Value::CpuDuration, 50};
+    DebugTools::GLFrameProfiler _profilerCulling{DebugTools::GLFrameProfiler::Value::CpuDuration, 50};
+    DebugTools::GLFrameProfiler _profilerRender{DebugTools::GLFrameProfiler::Value::CpuDuration, 50};
 
     Image2D _clusterKeyMasksImage{PixelFormat::R16UI, {TILES_X, TILES_Y},
         Containers::Array<char>{Containers::ValueInit, sizeof(UnsignedShort)*TILES_X*TILES_Y}};
@@ -368,7 +371,7 @@ ClusteredForwardExample::ClusteredForwardExample(const Arguments& arguments):
                         float(x)/4.0f*2*r.x() - r.x() + 0.25f,
                         float(z)/4.0f*r.y(),
                         float(y)/4.0f*2*r.z() - r.z(),
-                        5.0f*float(1 + 3*((z+x+y) % 3)) /* Light radius */
+                        3.0f*float(1 + 2*((z+x+y) % 3)) /* Light radius */
                     };
                 _lightColors[i] = Color3{float(x)/8.0f, float(y)/8.0f, 0.01f + float(z)/4.0f}.normalized();
                 ++i;
@@ -428,6 +431,7 @@ void ClusteredForwardExample::drawEvent() {
        use the normals to fine-tune custers.) */
 
     _profiler.beginFrame();
+    _profilerAssignment.beginFrame();
 
     _depthFramebuffer.bind();
     _depthFramebuffer.clear(GL::FramebufferClear::Depth);
@@ -452,10 +456,8 @@ void ClusteredForwardExample::drawEvent() {
      * we store an unsigned short bitmask per screen space tile (32x32) to indicate
      * whether the associated cluster is being used. */
 
-    _profilerAssignment.beginFrame();
     GL::Renderer::disable(GL::Renderer::Feature::DepthTest);
     _clusterKeyFramebuffer.mapForDraw(GL::Framebuffer::ColorAttachment(0)).bind();
-    _clusterKeyFramebuffer.clear(GL::FramebufferClear::Color);
     _clusterAssignmentShader
         .setDepthTexture(_depthTexture)
         .setProjectionParams(near, far)
@@ -472,13 +474,15 @@ void ClusteredForwardExample::drawEvent() {
     // Either:
      //_clusterKeyMasks.image(0, _clusterKeyMasksImage);
     // Or:
-    _clusterKeyFramebuffer.read({{}, {TILES_X, TILES_Y}}, _clusterKeyMasksImage);
+    //_clusterKeyFramebuffer.read({{}, {TILES_X, TILES_Y}}, _clusterKeyMasksImage);
+    _clusterKeyMasks.image(0, _clusterKeyMasksImage);
     _profilerAssignment.endFrame();
 
     /* 4 Assign lights to clusters */
     GL::defaultFramebuffer.bind();
     GL::defaultFramebuffer.clear(GL::FramebufferClear::Depth|GL::FramebufferClear::Color);
 
+    _profilerCulling.beginFrame();
     auto start = std::chrono::high_resolution_clock::now();
     int numClusters = 0;
 
@@ -565,12 +569,12 @@ void ClusteredForwardExample::drawEvent() {
                 // TODO: Only need to normalize plane 0-3
                 //for(auto& p : frustum) p /= p.xyz().length();
 
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.left().xyz(), frustum.left().xyz()) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.right().xyz(), frustum.right().xyz()) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.bottom().xyz(), frustum.bottom().xyz()) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.top().xyz(), frustum.top().xyz()) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.near().xyz(), frustum.near().xyz()) > 0.0f);
-                CORRADE_INTERNAL_ASSERT(Math::dot(cell.far().xyz(), frustum.far().xyz()) > 0.0f);
+                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.left().xyz(), frustum.left().xyz()) > 0.0f);
+                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.right().xyz(), frustum.right().xyz()) > 0.0f);
+                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.bottom().xyz(), frustum.bottom().xyz()) > 0.0f);
+                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.top().xyz(), frustum.top().xyz()) > 0.0f);
+                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.near().xyz(), frustum.near().xyz()) > 0.0f);
+                //CORRADE_INTERNAL_ASSERT(Math::dot(cell.far().xyz(), frustum.far().xyz()) > 0.0f);
 
                 //Debug() << "---";
                 //for(auto& p : cell) Debug() << p;
@@ -582,10 +586,6 @@ void ClusteredForwardExample::drawEvent() {
                 for(size_t i = 0; i < lights.size(); ++i) {
                     const Vector3& sphere = lights[i].xyz();
                     if(Math::Intersection::sphereFrustum(sphere, lights[i].w(), cell)) {
-                        if(lightListCount >= _lightList.size()) {
-                            Warning() << "!(lightListCount < _lightList.size())";
-                            goto end;
-                        }
                         _lightList[lightListCount++] = lightIndices[i];
                     }
                 }
@@ -598,8 +598,6 @@ void ClusteredForwardExample::drawEvent() {
         }
     }
 
-end:
-
     _profilerRender.beginFrame();
     _lightListTexture.setSubImage(0, {},
         ImageView1D{PixelFormat::R16UI, lightListCount, _lightList});
@@ -610,6 +608,7 @@ end:
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::high_resolution_clock::now() - start).count()/1000.0f << "ms";
     */
+    _profilerCulling.endFrame();
 
     // 5 Shade samples
 
@@ -686,6 +685,7 @@ end:
     if(++_framesSinceStats > 30) {
         Debug() << "Performance";
         Debug() << " Assignment:\t" << _profilerAssignment.statistics();
+        Debug() << " Culling:\t" << _profilerCulling.statistics();
         Debug() << " Render:\t" << _profilerRender.statistics();
         Debug() << " Frame:\t" << _profiler.statistics();
         _framesSinceStats = 0;

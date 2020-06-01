@@ -319,7 +319,12 @@ class ClusteredForwardPhong: public GL::AbstractShaderProgram {
         ClusteredForwardPhong& setTileSize(const Vector2& tileSize);
 
         ClusteredForwardPhong& setProjectionParams(float near, float far) {
-            setUniform(_projectionParamsUniform, Vector2{near, far});
+
+            const float lfn = std::log2f(far/near);
+            const float scale = float(DEPTH_SLICES)/lfn;
+            const float offset = float(DEPTH_SLICES)*std::log2f(near)/lfn;
+            setUniform(_projectionParamsUniform, Vector4{
+                near, far, scale, offset});
             return *this;
         }
 

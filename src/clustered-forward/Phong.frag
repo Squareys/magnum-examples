@@ -169,7 +169,7 @@ layout(location = 11)
 #endif
 uniform vec2 tileSize;
 
-uniform vec2 projectionParams;
+uniform vec4 projectionParams;
 
 #ifdef OBJECT_ID
 #ifdef EXPLICIT_UNIFORM_LOCATION
@@ -223,14 +223,7 @@ float linearDepth(float d) {
 
 
 uint depthSlice(float d) {
-    float near = projectionParams.x;
-    float far = projectionParams.y;
-    const float depthSlices = DEPTH_SLICES;
-
-    float lfn = log2(far/near);
-    float scale = depthSlices/lfn;
-    float offset = depthSlices*log2(near)/lfn;
-    return uint(log2(d)*scale - offset);
+    return uint(log2(d)*projectionParams.z - projectionParams.w);
 }
 
 
@@ -293,13 +286,13 @@ void main() {
         vec3 l = lightDir/lightRadius;
         float lightDist = length(lightDir);
         //const float attenuation = 1.0/(1.0 + lightDist/lightRadius);// + dot(l, l));
-        //float attenuation = pow(clamp(1 - pow(lightDist/lightRadius, 8), 0.0, 1.0), 8.0)/(1.0 + (lightDist*lightDist));
+        const float attenuation = pow(clamp(1 - pow(lightDist/lightRadius, 8), 0.0, 1.0), 8.0)/(1.0 + (lightDist*lightDist));
         //float attenuation = pow(clamp(1 - lightDist/lightRadius, 0.0, 1.0), 2.0)/(1.0 + lightDist*lightDist);
-        const float attenuation = smoothstep(lightRadius, 0, lightDist);
+        //const float attenuation = smoothstep(lightRadius, 0, lightDist);
         highp vec3 normalizedLightDirection = normalize(lightDir);
 
         //const float lightIntensity = lightColors[i].a;
-        lowp float intensity = max(0.0, 10*attenuation*dot(normalizedTransformedNormal, normalizedLightDirection));
+        lowp float intensity = max(0.0, 20*attenuation*dot(normalizedTransformedNormal, normalizedLightDirection));
         lowp vec3 lightColor = lightColors[lightIndex].rgb;
         fragmentColor += vec4(finalDiffuseColor.rgb*lightColor*intensity, finalDiffuseColor.a);
     }
