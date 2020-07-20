@@ -142,15 +142,14 @@ public:
         attachShaders({vert, frag});
         link();
 
+        bindFragmentDataLocation(0, "depthSlice");
+
         scaleUniform = uniformLocation("scale");
         transformationUniform = uniformLocation("transformationMatrix");
         projectionUniform = uniformLocation("projectionMatrix");
+        projectionParamsUniform = uniformLocation("projectionParams");
         viewUniform = uniformLocation("viewMatrix");
-    }
-
-    DepthShader& setProjectionParams(float near, float far) {
-        setUniform(scaleUniform, Vector2{near, far});
-        return *this;
+        planesUniform = uniformLocation("planes");
     }
 
     DepthShader& setTransformationMatrix(const Matrix4& transformation) {
@@ -168,10 +167,26 @@ public:
         return *this;
     }
 
+    DepthShader& setPlanes(const Containers::ArrayView<const float>& planes) {
+        setUniform(planesUniform, Containers::arrayCast<const Vector4>(planes));
+        return *this;
+    }
+
+    DepthShader& setProjectionParams(float near, float far) {
+        const float lfn = std::log2f(far/near);
+        const float scale = float(DEPTH_SLICES)/lfn;
+        const float offset = float(DEPTH_SLICES)*std::log2f(near)/lfn;
+        setUniform(projectionParamsUniform, Vector4{
+            near, far, scale, offset});
+        return *this;
+    }
+
     int scaleUniform;
     int transformationUniform;
     int projectionUniform;
+    int projectionParamsUniform;
     int viewUniform;
+    int planesUniform;
 };
 
 class ClusterAssignmentShader : public GL::AbstractShaderProgram {
@@ -218,6 +233,11 @@ public:
     }
 
     ClusterAssignmentShader& setDepthTexture(GL::Texture2D& texture) {
+        texture.bind(0);
+        return *this;
+    }
+
+    ClusterAssignmentShader& setDepthSliceTexture(GL::Texture2D& texture) {
         texture.bind(0);
         return *this;
     }
@@ -280,6 +300,7 @@ private:
     GL::Framebuffer _clusterKeyFramebuffer{NoCreate};
 
     GL::Texture2D _depthTexture;
+    GL::Texture2D _depthSliceTexture;
 
     GL::Texture1D _lightListTexture;
     GL::Texture2D _clusterKeyMasks;
@@ -338,9 +359,15 @@ ClusteredForwardExample::ClusteredForwardExample(const Arguments& arguments):
         .setMinificationFilter(GL::SamplerFilter::Nearest)
         .setMagnificationFilter(GL::SamplerFilter::Nearest)
         .setStorage(1, GL::TextureFormat::DepthComponent32F, framebufferSize());
+    _depthSliceTexture
+        .setWrapping({GL::SamplerWrapping::ClampToEdge})
+        .setMinificationFilter(GL::SamplerFilter::Nearest)
+        .setMagnificationFilter(GL::SamplerFilter::Nearest)
+        .setStorage(1, GL::TextureFormat::R16UI, framebufferSize());
     _depthFramebuffer = GL::Framebuffer({{}, framebufferSize()});
     _depthFramebuffer
-        .attachTexture(GL::Framebuffer::BufferAttachment::Depth, _depthTexture, 0);
+        .attachTexture(GL::Framebuffer::BufferAttachment::Depth, _depthTexture, 0)
+        .attachTexture(GL::Framebuffer::ColorAttachment(0), _depthSliceTexture, 0);
 
     _clusterKeyMasks
         .setMagnificationFilter(GL::SamplerFilter::Nearest)
@@ -425,6 +452,11 @@ void ClusteredForwardExample::drawEvent() {
     /* If debugView is enabled, freeze view (same as last frame) */
     _view = _debugOptions._debugView ? _view : debugView;
 
+    float depthPlanes[DEPTH_SLICES + 1];
+    for(int i = 0; i <= DEPTH_SLICES; ++i) {
+        depthPlanes[i] = near*Math::pow(far/near, float(i)/DEPTH_SLICES);
+    }
+
     /* 1 Render Scene to GBuffers
 
        (Depth buffer only in our case, as we do not
@@ -438,6 +470,7 @@ void ClusteredForwardExample::drawEvent() {
     _depthFramebuffer.mapForDraw(GL::Framebuffer::ColorAttachment{0});
 
     _depthShader.setProjectionParams(near, far)
+        .setPlanes(Containers::arrayView<float>(depthPlanes, 16))
         .setViewMatrix(_view)
         .setProjectionMatrix(projection);
     for(int i = 0; i < _meshes.size(); ++i) {
@@ -459,7 +492,7 @@ void ClusteredForwardExample::drawEvent() {
     GL::Renderer::disable(GL::Renderer::Feature::DepthTest);
     _clusterKeyFramebuffer.mapForDraw(GL::Framebuffer::ColorAttachment(0)).bind();
     _clusterAssignmentShader
-        .setDepthTexture(_depthTexture)
+        .setDepthSliceTexture(_depthSliceTexture)
         .setProjectionParams(near, far)
         .setViewport(Vector2(framebufferSize()))
         .setTileSize(Vector2(framebufferSize())/Vector2(float(TILES_X), float(TILES_Y)))
@@ -486,11 +519,6 @@ void ClusteredForwardExample::drawEvent() {
     auto start = std::chrono::high_resolution_clock::now();
     int numClusters = 0;
 
-    float depthPlanes[DEPTH_SLICES + 1];
-
-    for(int i = 0; i <= DEPTH_SLICES; ++i) {
-        depthPlanes[i] = near*Math::pow(far/near, float(i)/DEPTH_SLICES);
-    }
 
     Frustum frustum = Frustum::fromMatrix(projection*_view);
     for(auto& p : frustum) p /= p.xyz().length();

@@ -1,4 +1,4 @@
-uniform highp sampler2D depth;
+uniform highp usampler2D depth;
 uniform vec2 viewportScale;
 uniform vec2 tileSize;
 uniform float tanFov;
@@ -47,18 +47,10 @@ void main4() {
             vec2 screenPos = tileOffset + vec2(x, y);
             vec2 uv = viewportScale*screenPos;
 
-            float d = texture(depth, uv).x;
-            uint k = depthSlice(linearDepth(d));
-
-            float d2 = texture(depth, uv + vec2(0, viewportScale.y)).x;
-            uint k2 = depthSlice(linearDepth(d2));
-
-            float d3 = texture(depth, uv + vec2(viewportScale.x, 0)).x;
-            uint k3 = depthSlice(linearDepth(d3));
-
-            float d4 = texture(depth, uv + viewportScale).x;
-            uint k4 = depthSlice(linearDepth(d4));
-
+            uint k = texture(depth, uv).x;
+            uint k2 = texture(depth, uv + vec2(0, viewportScale.y)).x;
+            uint k3 = texture(depth, uv + vec2(viewportScale.x, 0)).x;
+            uint k4 = texture(depth, uv + viewportScale).x;
             color = color | (1u << k) | (1u << k2) | (1u << k3) | (1u << k4);
         }
     }
