@@ -104,6 +104,10 @@ if(WITH_OVR_EXAMPLE)
     add_subdirectory(ovr)
 endif()
 
+if(WITH_PHYSX_EXAMPLE)
+    add_subdirectory(physx)
+endif()
+
 if(WITH_PICKING_EXAMPLE)
     add_subdirectory(picking)
 endif()

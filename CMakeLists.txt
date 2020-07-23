@@ -1,5 +1,4 @@
-#
-#   This file is part of Magnum.
+# #   This file is part of Magnum.
 #
 #   Original authors — credit is appreciated but not required:
 #
@@ -51,6 +50,7 @@ option(WITH_MOUSEINTERACTION_EXAMPLE "Build Mouse Interaction example" OFF)
 cmake_dependent_option(WITH_MOTIONBLUR_EXAMPLE "Build Motion Blur example" OFF "NOT MAGNUM_TARGET_GLES" OFF)
 option(WITH_OCTREE_EXAMPLE "Build Octree example" OFF)
 option(WITH_OVR_EXAMPLE "Build OVR example" OFF)
+option(WITH_PHYSX_EXAMPLE "Build PhysX example" OFF)
 option(WITH_PICKING_EXAMPLE "Build Picking example" OFF)
 option(WITH_PRIMITIVES_EXAMPLE "Build Primitives example" OFF)
 option(WITH_RAYTRACING_EXAMPLE "Build Ray Tracing example" OFF)
